@@ -1,0 +1,47 @@
+name: Terraform PR Scan
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+
+jobs:
+  terraform-scan:
+    name: 🧪 Terraform Sanity & Security Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⚙️ Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: 🔍 Format check
+        run: terraform fmt -check -recursive
+
+      - name: ✅ Validate syntax
+        run: terraform validate
+
+      - name: 🛡️ TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - run: tflint --init && tflint
+
+      - name: 🧠 Checkov (optional)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          quiet: true
+          soft_fail: true
+
+      - name: 📸 List changed files
+        run: |
+          echo "🔄 Changed files in PR:"
+          git diff --name-only origin/main...HEAD
