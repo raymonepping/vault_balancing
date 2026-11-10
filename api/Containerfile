@@ -1,0 +1,12 @@
+ARG NODE_IMAGE=docker.io/library/node:24-alpine
+FROM ${NODE_IMAGE}
+ENV NODE_ENV=production
+WORKDIR /app
+# No dependencies (D13), no Vault token (D12).
+COPY package.json server.js ./
+COPY lib ./lib
+USER 1000:1000
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=15s \
+  CMD node -e "fetch('https://127.0.0.1:3000/healthz').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "server.js"]

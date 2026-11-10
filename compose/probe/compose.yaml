@@ -1,0 +1,76 @@
+# compose/probe/compose.yaml: scratch clusters for make probe (prompt 03).
+# probe-a, probe-b, probe-c: single-node Raft, Shamir 1/1, Enterprise; a
+# scratch HAProxy for the fence case. scripts/probe.sh creates them and
+# removes them with their volumes at the end, also on failure. Never part of
+# the lab; the real sites are not touched.
+
+x-probe: &probe
+  image: ${VAULT_ENT_IMAGE}
+  user: "100:1000"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  entrypoint: ["/bin/sh", "/vbal/vault-server.sh"]
+  networks: [default]
+  mem_limit: 512m
+
+x-env: &env
+  VAULT_ADDR: https://127.0.0.1:8200
+  VAULT_CACERT: /vault/config/tls/ca-chain.pem
+  VAULT_LICENSE_PATH: /vault/config/vault.hclic
+  VBAL_SITE: probe
+
+services:
+  probe-a:
+    <<: *probe
+    container_name: vbal-probe_a
+    hostname: probe-a
+    environment: { <<: *env, VBAL_HOST: probe-a }
+    ports: ["127.0.0.1:${VBAL_PORT_PROBE_A}:8200"]
+    volumes:
+      - probe-a-data:/vault/file
+      - ../../vault/seal/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+  probe-b:
+    <<: *probe
+    container_name: vbal-probe_b
+    hostname: probe-b
+    environment: { <<: *env, VBAL_HOST: probe-b }
+    ports: ["127.0.0.1:${VBAL_PORT_PROBE_B}:8200"]
+    volumes:
+      - probe-b-data:/vault/file
+      - ../../vault/seal/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+  probe-c:
+    <<: *probe
+    container_name: vbal-probe_c
+    hostname: probe-c
+    environment: { <<: *env, VBAL_HOST: probe-c }
+    ports: ["127.0.0.1:${VBAL_PORT_PROBE_C}:8200"]
+    volumes:
+      - probe-c-data:/vault/file
+      - ../../vault/seal/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+  haproxy:
+    image: ${HAPROXY_IMAGE}
+    container_name: vbal-probe_haproxy
+    hostname: probe-haproxy
+    networks: [default]
+    volumes:
+      - ${VBAL_PROBE_HAPROXY_CFG:-/dev/null}:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ../../vault-tls/ca-chain.pem:/etc/haproxy/ca.pem:ro
+
+networks:
+  default:
+    name: vbal-internal
+    external: true
+
+volumes:
+  probe-a-data: {}
+  probe-b-data: {}
+  probe-c-data: {}

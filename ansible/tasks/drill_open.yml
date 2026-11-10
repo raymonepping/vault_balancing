@@ -1,0 +1,16 @@
+# drill_open: the open drill (one is opened if none is) and its state file
+# .build/drill/<id>/state.json (which site is down and what it was). Sets
+# drill_id, drill_dir, drill_state and the common facts the playbooks use.
+- name: Open (or join) the drill
+  ansible.builtin.command:
+    argv: ["{{ vbal_root }}/scripts/journal.sh", open]
+  register: drill_open_id
+  changed_when: false
+
+- name: The drill's state
+  ansible.builtin.set_fact:
+    drill_id: "{{ drill_open_id.stdout | trim }}"
+    drill_dir: "{{ vbal_build_dir }}/drill/{{ drill_open_id.stdout | trim }}"
+    drill_state: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/drill/' + (drill_open_id.stdout | trim) + '/state.json', errors='ignore') | default('{}', true) | from_json }}"
+    vbal_platform_token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-platform') }}"
+  no_log: true

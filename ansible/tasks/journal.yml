@@ -1,0 +1,8 @@
+# journal: one line in the drill journal (scripts/journal.sh is the one
+# writer). Pass j: {act, step, target, request_path, http_code, vault_said,
+# duration_ms}. Never a token: journal.sh refuses token-shaped values.
+- name: "Journal: {{ j.act }} {{ j.step }}"
+  ansible.builtin.command:
+    argv: ["{{ vbal_root }}/scripts/journal.sh", add]
+    stdin: "{{ j | to_json }}"
+  changed_when: false

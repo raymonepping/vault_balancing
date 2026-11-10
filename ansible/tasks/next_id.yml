@@ -1,0 +1,33 @@
+# next_id: a fresh activation id for site `next_id_site` as a `next_id_kind`
+# secondary of `next_id_prim` (gotcha 17: never reuse one). Allocated above
+# both .secrets/vault/replication-ids.json and the primary's known_secondaries
+# (a failed run after secondary-token still burns its id), and recorded
+# BEFORE the caller asks for the token. Sets next_id.
+- name: "Activation ids so far ({{ next_id_site }})"
+  ansible.builtin.set_fact:
+    next_id_ids: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/replication-ids.json', errors='ignore') | default('{}', true) | from_json }}"
+
+- name: "Ids {{ next_id_prim.id }} already knows ({{ next_id_site }})"
+  ansible.builtin.uri:
+    url: "{{ next_id_prim.nodes[0].addr }}/v1/sys/replication/{{ next_id_kind }}/status"
+    ca_path: "{{ vbal_ca }}"
+  register: next_id_known
+  check_mode: false  # a read; check mode must see the real state
+
+- name: "Allocate it ({{ next_id_site }})"
+  ansible.builtin.set_fact:
+    next_id_n: >-
+      {{ ([next_id_ids[next_id_site].n | default(0) | int]
+          + (next_id_known.json.data.known_secondaries | default([], true)
+             | select('match', '^' + next_id_site + '-[0-9]+$')
+             | map('regex_replace', '^.*-', '') | map('int') | list)) | max + 1 }}
+
+- name: "Record it before asking for its token ({{ next_id_site }})"
+  ansible.builtin.copy:
+    dest: "{{ vbal_state_dir }}/replication-ids.json"
+    mode: "0600"
+    content: "{{ next_id_ids | combine({next_id_site: {'n': next_id_n | int, 'current': next_id_site ~ '-' ~ next_id_n, 'kind': next_id_kind}}) | to_nice_json }}"
+
+- name: "The id ({{ next_id_site }})"
+  ansible.builtin.set_fact:
+    next_id: "{{ next_id_site }}-{{ next_id_n }}"

@@ -1,0 +1,9 @@
+# Set by the playbook (seal-init.yml or bootstrap.yml).
+vault_init_cluster: ""          # seal-<site> | vault-<site> (names .secrets/vault/<cluster>-init.json)
+vault_init_addr: ""             # the node Ansible initialises and talks to
+vault_init_params: {}           # body of PUT sys/init
+vault_init_policies: []         # [{name, file}] written with the init root token
+vault_init_tokens: []           # [{name, policy, period | ttl}] minted with the init root token
+# A secondary-to-be keeps its init root token: it is used once, to activate
+# the secondary (prompt 05), and dies with the secondary's token store (D6).
+vault_init_keep_root: false

@@ -1,0 +1,130 @@
+# compose/site/compose.yaml: ONE site (ams, fra or dub): its seal Vault and
+# three Raft nodes. scripts/compose.sh <site> sets SITE and SITE_PORT_* and
+# names the project vbal-<site>, so the same file serves every site.
+#
+# Each node auto-unseals through its own site's seal Vault with its OWN seal
+# token, mounted from .secrets/vault/seal/vault-<site>-<n> (Ansible phase
+# seal-tokens writes it in place). There is no VAULT_TOKEN env var here.
+# Start order is make's job (scripts/sites-up.sh): the seal Vault unsealed
+# first (gotcha 2, 20); a secondary starts node 1 only until activated.
+
+x-vault: &vault
+  image: ${VAULT_ENT_IMAGE}
+  user: "100:1000"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  entrypoint: ["/bin/sh", "/vbal/vault-server.sh"]
+  restart: unless-stopped
+  networks: [default]
+  healthcheck:
+    # "The process answers": 200 active, 429 standby, 472 DR secondary,
+    # 473 perf standby, 503 sealed, 501 uninitialized. Readiness is
+    # vault-status's job.
+    test: ["CMD-SHELL", "S=$$(wget -S -qO/dev/null --no-check-certificate 'https://127.0.0.1:8200/v1/sys/health' 2>&1 | awk '/^ *HTTP\\//{print $$2; exit}'); [ -n \"$$S\" ]"]
+    interval: 10s
+    timeout: 5s
+    retries: 15
+    start_period: 20s
+
+x-env: &env
+  VAULT_ADDR: https://127.0.0.1:8200
+  VAULT_CACERT: /vault/config/tls/ca-chain.pem
+  # The licence is a read-only file, never an environment variable.
+  VAULT_LICENSE_PATH: /vault/config/vault.hclic
+  VBAL_SITE: ${SITE}
+
+services:
+  seal:
+    <<: *vault
+    container_name: vbal-seal_${SITE}
+    hostname: seal-${SITE}
+    mem_limit: 512m
+    environment:
+      <<: *env
+      VBAL_HOST: seal-${SITE}
+    ports: ["127.0.0.1:${SITE_PORT_SEAL}:8200"]
+    volumes:
+      - seal-data:/vault/file          # persistent: Raft data + Transit key
+      - seal-audit:/vault/audit        # persistent: audit log
+      - ../../vault/seal/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+
+  vault-1:
+    <<: *vault
+    container_name: vbal-vault_${SITE}_1
+    hostname: vault-${SITE}-1
+    mem_limit: 1g
+    environment:
+      <<: *env
+      VBAL_HOST: vault-${SITE}-1
+      VBAL_PEERS: vault-${SITE}-2 vault-${SITE}-3
+    ports: ["127.0.0.1:${SITE_PORT_1}:8200"]
+    volumes:
+      - vault-1-data:/vault/file
+      - vault-1-audit:/vault/audit
+      - ../../vault/cluster/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+      - ../../.secrets/vault/seal/vault-${SITE}-1:/run/secrets/transit-token:ro
+
+  vault-2:
+    <<: *vault
+    container_name: vbal-vault_${SITE}_2
+    hostname: vault-${SITE}-2
+    mem_limit: 1g
+    environment:
+      <<: *env
+      VBAL_HOST: vault-${SITE}-2
+      VBAL_PEERS: vault-${SITE}-1 vault-${SITE}-3
+    ports: ["127.0.0.1:${SITE_PORT_2}:8200"]
+    volumes:
+      - vault-2-data:/vault/file
+      - vault-2-audit:/vault/audit
+      - ../../vault/cluster/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+      - ../../.secrets/vault/seal/vault-${SITE}-2:/run/secrets/transit-token:ro
+
+  vault-3:
+    <<: *vault
+    container_name: vbal-vault_${SITE}_3
+    hostname: vault-${SITE}-3
+    mem_limit: 1g
+    environment:
+      <<: *env
+      VBAL_HOST: vault-${SITE}-3
+      VBAL_PEERS: vault-${SITE}-1 vault-${SITE}-2
+    ports: ["127.0.0.1:${SITE_PORT_3}:8200"]
+    volumes:
+      - vault-3-data:/vault/file
+      - vault-3-audit:/vault/audit
+      - ../../vault/cluster/config.hcl.tmpl:/vault/config/config.hcl.tmpl:ro
+      - ../../vault-tls:/vault/config/tls:ro
+      - ../../scripts/vault-server.sh:/vbal/vault-server.sh:ro
+      - ../../.secrets/vault/vault.hclic:/vault/config/vault.hclic:ro
+      - ../../.secrets/vault/seal/vault-${SITE}-3:/run/secrets/transit-token:ro
+
+networks:
+  default:
+    name: vbal-internal
+    external: true
+
+# The image has no /vault/audit: without driver_opts an audit volume is
+# root-owned and uid 100 cannot open its log (gotcha 8).
+x-audit: &audit
+  labels: { io.vbal.data: "true" }
+  driver_opts: { o: "uid=100,gid=1000" }
+
+volumes:
+  seal-data: { labels: { io.vbal.data: "true" } }
+  seal-audit: *audit
+  vault-1-data: { labels: { io.vbal.data: "true" } }
+  vault-1-audit: *audit
+  vault-2-data: { labels: { io.vbal.data: "true" } }
+  vault-2-audit: *audit
+  vault-3-data: { labels: { io.vbal.data: "true" } }
+  vault-3-audit: *audit

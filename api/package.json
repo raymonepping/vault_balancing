@@ -1,0 +1,9 @@
+{
+  "name": "vbal-api",
+  "private": true,
+  "type": "module",
+  "description": "The situation room API: what Vault, HAProxy, the ticker and the drill journal say. Read-only, no Vault token.",
+  "engines": { "node": ">=24" },
+  "scripts": { "start": "node server.js", "test": "node --test 'test/*.test.js'" },
+  "dependencies": {}
+}

@@ -1,0 +1,21 @@
+# The only phase list (golden_ticket). One phase per line: <tool> <name>.
+# make = a make target, tf = a Terraform root (scripts/tf.sh; "seal" means
+# every seal-<site> root in turn), ansible = a playbook (scripts/ansible.sh;
+# the seal playbooks loop over the sites themselves). Read by scripts/lab.sh,
+# idempotency.sh, drift.sh, layers.sh and the console's Layers page. A line
+# ending in "# pending NN" is skipped until prompt NN lands.
+make    seals-up
+ansible seal-init
+tf      seal
+ansible seal-tokens
+make    sites-up
+ansible bootstrap
+make    license-features
+tf      platform
+ansible replicate
+make    paths-filter
+make    frontdoor-up
+make    identity-up
+make    app-up
+make    runner-up
+ansible validate

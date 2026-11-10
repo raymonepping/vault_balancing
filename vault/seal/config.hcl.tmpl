@@ -1,0 +1,26 @@
+# seal-@SITE@: this site's Transit auto-unseal provider. Shamir seal (1-of-1):
+# scripts/vault-unseal.sh unseals it after every start (gotcha 20). It holds
+# only the Transit key `autounseal`, and dies with its site (D5).
+# Rendered at container start by scripts/vault-server.sh (@HOST@, @SITE@).
+ui            = false
+disable_mlock = true
+
+api_addr     = "https://@HOST@:8200"
+cluster_addr = "https://@HOST@:8201"
+
+default_lease_ttl = "1h"
+max_lease_ttl     = "2160h"
+
+listener "tcp" {
+  address         = "0.0.0.0:8200"
+  tls_cert_file   = "/vault/config/tls/vault.crt"
+  tls_key_file    = "/vault/config/tls/vault.key"
+  tls_min_version = "tls13"
+}
+
+storage "raft" {
+  path    = "/vault/file"
+  node_id = "@HOST@"
+}
+
+log_level = "warn"

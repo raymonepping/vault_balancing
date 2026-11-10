@@ -1,0 +1,8 @@
+{
+  "name": "vbal-ticker",
+  "private": true,
+  "type": "module",
+  "description": "The drill's measuring instrument: writes a ring of keys through the front door, reads lag at Frankfurt.",
+  "scripts": { "test": "node --test 'test/*.test.js'" },
+  "engines": { "node": ">=24" }
+}

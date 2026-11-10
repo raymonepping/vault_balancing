@@ -1,0 +1,44 @@
+# find_primary: set vbal_primary (an entry of vbal_sites) to the site Vault
+# reports as primary now (D8): reachable, unfenced, DR or performance mode
+# primary. Reads the unauthenticated sys/replication/status of each site's
+# first node that answers. Fails on none or on two (split brain).
+- name: Read each site's replication status (unauthenticated)
+  ansible.builtin.uri:
+    url: "{{ item.1.addr }}/v1/sys/replication/status"
+    ca_path: "{{ vbal_ca }}"
+    timeout: 5
+    status_code: [200, 400, 429, 472, 473, 500, 501, 503, -1]
+  loop: "{{ vbal_sites | subelements('nodes') }}"
+  loop_control:
+    label: "{{ item.1.name }}"
+  register: find_primary_status
+  check_mode: false  # a read; check mode must see the real state
+  failed_when: false
+
+- name: Read the fence list
+  ansible.builtin.set_fact:
+    find_primary_fenced: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+
+- name: Pick the primary
+  ansible.builtin.set_fact:
+    find_primary_ids: >-
+      {{ find_primary_status.results
+         | selectattr('status', 'eq', 200)
+         | selectattr('json.data', 'defined')
+         | selectattr('json.data.dr.mode', 'eq', 'primary')
+         | map(attribute='item.0.id') | unique
+         | reject('in', find_primary_fenced) | list }}
+
+- name: Exactly one unfenced site must report primary
+  ansible.builtin.assert:
+    that: find_primary_ids | length == 1
+    fail_msg: >-
+      {{ 'No site reports DR primary.' if find_primary_ids | length == 0 else
+         'More than one unfenced site reports primary: ' + find_primary_ids | join(', ') + '. Fence one: make fence SITE=<site>' }}
+    quiet: true
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    vbal_primary: "{{ vbal_sites | selectattr('id', 'eq', find_primary_ids[0]) | first }}"
+    vbal_platform_token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-platform') }}"
+  no_log: true

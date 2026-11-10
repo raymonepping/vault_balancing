@@ -1,0 +1,58 @@
+# Phase 6 (ansible bootstrap): initialise every site's node 1 (recovery 1/1;
+# the seal is Transit).
+#   The bootstrap primary (ams): write the platform bootstrap policies complete
+#   (they replicate to every site and must already hold every path prompts 05
+#   and 06 need), mint tf-platform and ansible-platform, wait for three voters,
+#   then revoke root (D6).
+#   A secondary-to-be (fra, dub): init node 1 only and keep its root token: it
+#   is used once, to activate the secondary in prompt 05, and dies there with
+#   the secondary's token store (D6, gotcha 16). Anything else written there
+#   would be wiped by activation.
+- name: Initialise the bootstrap primary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Initialise vault-{{ site.id }}
+      ansible.builtin.include_role:
+        name: vault_init
+      vars:
+        vault_init_cluster: "vault-{{ site.id }}"
+        vault_init_addr: "{{ site.nodes[0].addr }}"
+        vault_init_params: { recovery_shares: 1, recovery_threshold: 1 }
+        vault_init_policies:
+          - { name: vbal-tf-platform, file: vault/policies/bootstrap/vbal-tf-platform.hcl }
+          - { name: vbal-ansible-platform, file: vault/policies/bootstrap/vbal-ansible-platform.hcl }
+        vault_init_tokens:
+          - { name: tf-platform, policy: vbal-tf-platform, period: 768h }
+          - { name: ansible-platform, policy: vbal-ansible-platform, period: 768h }
+      loop: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | list }}"
+      loop_control:
+        loop_var: site
+        label: "{{ site.id }}"
+
+    - name: Three voters on {{ site.id }}
+      ansible.builtin.include_role:
+        name: cluster_bootstrap
+      vars:
+        cluster_bootstrap_site: "{{ site }}"
+      loop: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | list }}"
+      loop_control:
+        loop_var: site
+        label: "{{ site.id }}"
+
+- name: Initialise node 1 of each secondary-to-be
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Initialise vault-{{ site.id }} (keep the root token for activation)
+      ansible.builtin.include_role:
+        name: vault_init
+      vars:
+        vault_init_cluster: "vault-{{ site.id }}"
+        vault_init_addr: "{{ site.nodes[0].addr }}"
+        vault_init_params: { recovery_shares: 1, recovery_threshold: 1 }
+        vault_init_keep_root: true
+      loop: "{{ vbal_sites | rejectattr('bootstrap_role', 'eq', 'primary') | list }}"
+      loop_control:
+        loop_var: site
+        label: "{{ site.id }}"

@@ -1,0 +1,72 @@
+# seal_tokens: for one site (seal_tokens_site, an entry of vbal_sites), one
+# periodic orphan seal token per node, minted from the token role autounseal
+# that Terraform declared on that site's seal Vault (D5), with
+# ansible-seal-<site>. A token is reissued only when the seal Vault no longer
+# accepts it. Files are written IN PLACE (gotcha 4: a single-file bind mount
+# keeps the old inode after a rename), and a node whose token changed is
+# listed in .build/seal-restart so make sites-up restarts it.
+- name: "Ensure the seal token directory ({{ seal_tokens_site.id }})"
+  ansible.builtin.file:
+    path: "{{ vbal_state_dir }}/seal"
+    state: directory
+    mode: "0700"
+
+- name: "Does the seal Vault still accept each node's token? ({{ seal_tokens_site.id }})"
+  ansible.builtin.uri:
+    url: "{{ seal_tokens_site.seal_addr }}/v1/auth/token/lookup"
+    ca_path: "{{ vbal_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-seal-' + seal_tokens_site.id) }}"
+    body_format: json
+    body:
+      token: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/seal/' + item.name, errors='ignore') | default('none', true) }}"
+    status_code: [200, 400, 403]
+  loop: "{{ seal_tokens_site.nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: seal_tokens_lookup
+  check_mode: false  # a read; check mode must see the real state
+  no_log: true
+
+- name: "Mint a token for each node the seal Vault does not accept ({{ seal_tokens_site.id }})"
+  ansible.builtin.uri:
+    url: "{{ seal_tokens_site.seal_addr }}/v1/auth/token/create/autounseal"
+    ca_path: "{{ vbal_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-seal-' + seal_tokens_site.id) }}"
+    body_format: json
+    body:
+      display_name: "vbal-seal-{{ item.item.name }}"
+      meta:
+        node: "{{ item.item.name }}"
+  loop: "{{ seal_tokens_lookup.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.status != 200
+  register: seal_tokens_minted
+  changed_when: true
+  no_log: true
+
+# Truncate and write the same inode; the token arrives on stdin, never argv.
+- name: "Write each new token in place (0600) ({{ seal_tokens_site.id }})"
+  ansible.builtin.command:
+    argv: [sh, -c, 'umask 077; touch "$1"; chmod 600 "$1"; cat >"$1"', sh, "{{ vbal_state_dir }}/seal/{{ item.item.item.name }}"]
+    stdin: "{{ item.json.auth.client_token }}"
+    stdin_add_newline: false
+  loop: "{{ seal_tokens_minted.results | selectattr('json', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item.item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: "List the nodes that must restart to read their new token ({{ seal_tokens_site.id }})"
+  ansible.builtin.lineinfile:
+    path: "{{ vbal_build_dir }}/seal-restart"
+    line: "{{ item.item.item.name }}"
+    create: true
+    mode: "0644"
+  loop: "{{ seal_tokens_minted.results | selectattr('json', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item.item.name }}"

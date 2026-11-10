@@ -1,0 +1,35 @@
+# compose/frontdoor/compose.yaml: the front door (D11). HAProxy in TCP
+# passthrough; its config is rendered by Ansible into .build/frontdoor/
+# (mounted as a directory, so a re-render is seen). The runtime socket stays
+# inside the container (127.0.0.1:9999): Ansible reaches it with podman exec.
+services:
+  haproxy:
+    image: ${HAPROXY_IMAGE}
+    container_name: vbal-haproxy
+    hostname: frontdoor
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    restart: unless-stopped
+    mem_limit: 128m
+    networks:
+      default:
+        aliases: [frontdoor]
+    ports:
+      - "127.0.0.1:${VBAL_PORT_FRONTDOOR}:8443"
+      - "127.0.0.1:${VBAL_PORT_STATS}:8404"
+    volumes:
+      - ../../.build/frontdoor:/usr/local/etc/haproxy:ro
+      - ../../vault-tls/ca-chain.pem:/etc/haproxy/ca.pem:ro
+    tmpfs: [/tmp, /run]
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'show info' | nc 127.0.0.1 9999 | grep -q '^Name: HAProxy'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+networks:
+  default:
+    name: vbal-internal
+    external: true

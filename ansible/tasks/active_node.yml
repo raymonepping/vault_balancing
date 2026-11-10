@@ -1,0 +1,21 @@
+# active_node: set active_addr to the active node of site `an_site` (an entry
+# of vbal_sites), from each node's unauthenticated sys/leader (is_self);
+# falls back to node 1 (a standby forwards most requests).
+- name: "Who is the active node? ({{ an_site.id }})"
+  ansible.builtin.uri:
+    url: "{{ item.addr }}/v1/sys/leader"
+    ca_path: "{{ vbal_ca }}"
+    timeout: 5
+    status_code: [200, 400, 429, 472, 473, 500, 503, -1]
+  loop: "{{ an_site.nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: an_leader
+  check_mode: false  # a read; check mode must see the real state
+  failed_when: false
+
+- name: "Remember it ({{ an_site.id }})"
+  ansible.builtin.set_fact:
+    active_addr: >-
+      {{ (an_leader.results | selectattr('status', 'eq', 200) | selectattr('json.is_self', 'defined')
+          | selectattr('json.is_self') | map(attribute='item.addr') | list + [an_site.nodes[0].addr]) | first }}

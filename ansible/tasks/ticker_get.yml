@@ -1,0 +1,11 @@
+# ticker_get: GET tg_path from the ticker (internal network only); sets tg.
+- name: "Ticker: GET {{ tg_path }}"
+  ansible.builtin.command:
+    argv: [podman, exec, vbal-ticker, node, -e, "fetch('http://127.0.0.1:9100{{ tg_path }}').then(r=>r.text()).then(t=>process.stdout.write(t))"]
+  register: tg_out
+  changed_when: false
+  check_mode: false  # a read; check mode must see the real state
+
+- name: "Ticker: parse {{ tg_path }}"
+  ansible.builtin.set_fact:
+    tg: "{{ tg_out.stdout | from_json }}"

@@ -1,0 +1,7 @@
+# make frontdoor-up (and the fence targets): render the front door's config
+# from the topology and the fence list, reload HAProxy when it changed.
+- name: Front door
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - frontdoor

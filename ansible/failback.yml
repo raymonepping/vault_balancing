@@ -1,0 +1,235 @@
+# Act V (make failback): back home, planned. The bootstrap primary (now a DR
+# secondary of the drill's primary) catches up, the drill's primary is
+# demoted, the bootstrap primary is promoted with the DR operations token, the
+# old drill primary is re-attached as its DR secondary. make failback then
+# re-applies the platform root (the paths filter for the id Frankfurt may need,
+# gotcha 28) and runs failback-finish.yml: Frankfurt follows home, and every
+# write acknowledged during the failback is re-read: zero may be missing.
+- name: Act V, back home
+  hosts: localhost
+  gather_facts: false
+  vars:
+    home: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | first }}"
+    fra: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'performance') | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: The drill's primary
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+
+    - name: Preconditions (Vault's own answers)
+      ansible.builtin.uri:
+        url: "{{ item.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      loop: ["{{ home }}", "{{ fra }}"]
+      loop_control:
+        label: "{{ item.id }}"
+      register: fb_pre
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: The fence list
+      ansible.builtin.set_fact:
+        fb_fenced: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+        fb_away: "{{ vbal_primary }}"
+
+    - name: Refuse a failback that would lose writes or has nowhere to go
+      ansible.builtin.assert:
+        that:
+          - fb_away.id != home.id
+          - fb_pre.results[0].json.data.dr.mode == 'secondary'
+          - fb_pre.results[0].json.data.dr.state == 'stream-wals'
+          - fb_pre.results[1].json.data.performance.state == 'stream-wals'
+          - home.id not in fb_fenced
+        fail_msg: >-
+          failback needs: a drill primary other than {{ home.id }} (now {{ fb_away.id }}), {{ home.id }} streaming as its DR secondary
+          (now dr={{ fb_pre.results[0].json.data.dr.mode }}/{{ fb_pre.results[0].json.data.dr.state | default('-') }}),
+          {{ fra.id }} streaming (now {{ fb_pre.results[1].json.data.performance.state | default('-') }}), and {{ home.id }} unfenced (make unfence SITE={{ home.id }}).
+        quiet: true
+
+    - name: Journal the start (the zero-loss window opens)
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "failback start", target: "{{ home.id }}", request_path: null, http_code: null,
+             vault_said: "{{ fb_away.id }} is primary; {{ home.id }} streams as its DR secondary" }
+
+    - name: Window start
+      ansible.builtin.set_fact:
+        fb_start: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] ~ 'Z' }}"
+
+    - name: "{{ home.id }} has caught up with {{ fb_away.id }} (WAL index)"
+      ansible.builtin.uri:
+        url: "{{ item }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      loop: ["{{ fb_away.nodes[0].addr }}", "{{ home.nodes[0].addr }}"]
+      register: fb_wal
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Wait until its last_remote_wal reaches the primary's last_wal
+      ansible.builtin.uri:
+        url: "{{ home.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: fb_home_wal
+      check_mode: false  # a read; check mode must see the real state
+      retries: 60
+      delay: 1
+      until: (fb_home_wal.json.data.dr.last_remote_wal | default(0) | int) >= (fb_wal.results[0].json.data.dr.last_wal | default(0) | int)
+
+    - name: "Its active node ({{ fb_away.id }})"
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ fb_away }}"
+
+    - name: "Demote, performance then DR (a DR secondary refuses every token) ({{ fb_away.id }})"
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/{{ item }}/primary/demote"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: {}
+        status_code: [200, 204]
+      loop: [performance, dr]
+      changed_when: true
+      no_log: true
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "demoted", target: "{{ fb_away.id }}", request_path: "sys/replication/{dr,performance}/primary/demote", http_code: 200,
+             vault_said: "{{ fb_away.id }} demoted (planned): writes pause until {{ home.id }} is promoted" }
+
+    - name: "Its active node ({{ home.id }})"
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ home }}"
+
+    - name: "Promote with the DR operations token ({{ home.id }})"
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/dr/secondary/promote"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token') }}"
+        body_format: json
+        body: {}
+        status_code: [200, 204, 400, 403, 500]
+      register: fb_promote
+      changed_when: fb_promote.status in [200, 204]
+      no_log: true
+
+    - name: Journal Vault's answer
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "promoted", target: "{{ home.id }}", request_path: "sys/replication/dr/secondary/promote",
+             http_code: "{{ fb_promote.status }}", vault_said: "{{ (fb_promote.json.errors | default(['promoted']))[0] }}" }
+
+    - name: Stop when Vault refused
+      ansible.builtin.fail:
+        msg: "promote {{ home.id }}: HTTP {{ fb_promote.status }} {{ (fb_promote.json.errors | default(['']))[0] }}"
+      when: fb_promote.status not in [200, 204]
+
+    - name: The front door routes to {{ home.id }} again
+      ansible.builtin.include_tasks: tasks/frontdoor_wait.yml
+      vars:
+        fw_site: "{{ home.id }}"
+        fw_backend: primary
+        fw_state: "^UP"
+        fw_mode: any
+        fw_retries: 120
+
+    - name: Promotion time
+      ansible.builtin.set_fact:
+        fb_promoted_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] ~ 'Z' }}"
+
+    # Routed is not enough: a client's kept-alive connection must reach the new
+    # primary too (the first drill's ticker stayed on demoted dub until the
+    # front door cut its sessions).
+    - name: Clients write again (the ticker's first acknowledged write after the promotion)
+      ansible.builtin.command:
+        argv: [podman, exec, vbal-ticker, node, -e, "fetch('http://127.0.0.1:9100/first-ok?after={{ fb_promoted_at }}').then(r=>r.text()).then(t=>process.stdout.write(t))"]
+      register: fb_first
+      changed_when: false
+      check_mode: false  # a read; check mode must see the real state
+      retries: 60
+      delay: 1
+      until: (fb_first.stdout | from_json).first_ok is not none
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "writes again", target: "{{ home.id }}", request_path: "POST payments/kv/data/ticker/<slot> (front door)", http_code: 200,
+             vault_said: "seq {{ (fb_first.stdout | from_json).first_ok.seq }} acknowledged at {{ (fb_first.stdout | from_json).first_ok.sent_at[11:23] }}" }
+
+    - name: The new primary
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+
+    - name: A DR operations token from it (D9)
+      ansible.builtin.include_tasks: tasks/dr_token.yml
+
+    - name: "A fresh activation id from {{ home.id }} ({{ fb_away.id }})"
+      ansible.builtin.include_tasks: tasks/next_id.yml
+      vars:
+        next_id_site: "{{ fb_away.id }}"
+        next_id_kind: dr
+        next_id_prim: "{{ home }}"
+
+    - name: "DR secondary activation token from {{ home.id }} ({{ fb_away.id }})"
+      ansible.builtin.uri:
+        url: "{{ home.nodes[0].addr }}/v1/sys/replication/dr/primary/secondary-token"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: { id: "{{ next_id }}", ttl: 15m }
+      register: fb_wrap
+      changed_when: true
+      no_log: true
+
+    - name: "Its active node ({{ fb_away.id }})"
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ fb_away }}"
+
+    - name: "Update-primary with the DR operations token ({{ fb_away.id }})"
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/dr/secondary/update-primary"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token') }}"
+        body_format: json
+        body: { token: "{{ fb_wrap.json.wrap_info.token }}", ca_file: /vault/config/tls/ca-chain.pem }
+        status_code: [200, 204, 400, 403, 500]
+      register: fb_attach
+      changed_when: fb_attach.status in [200, 204]
+      no_log: true
+
+    - name: Journal Vault's answer
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "re-attached as DR secondary", target: "{{ fb_away.id }}", request_path: "sys/replication/dr/secondary/update-primary",
+             http_code: "{{ fb_attach.status }}", vault_said: "{{ (fb_attach.json.errors | default(['accepted, id ' ~ next_id]))[0] }}" }
+
+    - name: Stop when Vault refused
+      ansible.builtin.fail:
+        msg: "update-primary on {{ fb_away.id }}: HTTP {{ fb_attach.status }} {{ (fb_attach.json.errors | default(['']))[0] }}"
+      when: fb_attach.status not in [200, 204]
+
+    - name: "{{ fb_away.id }} streams from {{ home.id }}"
+      ansible.builtin.uri:
+        url: "{{ fb_away.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: fb_away_stream
+      check_mode: false  # a read; check mode must see the real state
+      retries: 90
+      delay: 2
+      until: fb_away_stream.json.data.dr.state | default('') == 'stream-wals'
+
+    - name: Remember the failback window for failback-finish.yml
+      ansible.builtin.copy:
+        dest: "{{ drill_dir }}/state.json"
+        mode: "0644"
+        content: "{{ drill_state | combine({'failback_start': fb_start}) | to_nice_json }}"

@@ -128,7 +128,7 @@ docker-compose.override.yml
 *.log
 crash.log
 justfile
-# tfvars often carry real credentials — commit .tfvars.example instead
+# tfvars often carry real credentials: commit .tfvars.example instead
 *.tfvars
 !*.tfvars.example
 !*.tfvars.sample
@@ -164,10 +164,10 @@ credentials/
 ########################################
 # 🏛️ HashiCorp Vault
 ########################################
-# Vault storage backend — contains keyring and master encryption keys
+# Vault storage backend: contains keyring and master encryption keys
 vault/vault-data/
 vault-data/
-# Vault init files — contain root tokens and unseal keys
+# Vault init files: contain root tokens and unseal keys
 vault-init.txt
 vault.init
 init.txt
@@ -223,3 +223,28 @@ kube/config
 # AI assistant tooling (local only)
 AGENTS.md
 AGENTS.override.md
+
+########################################
+# vault_balancing
+########################################
+prompts/
+input/
+article/
+backups/
+.build/
+.ref/
+!compose/site/
+vault-tls/*.key
+!.env.example
+e2e/.auth/
+test-results/
+playwright-report/
+web/dist/
+*.env
+.vault.*
+*.vault
+*.jsonl
+
+# ── Added by commit_gh --harden ─────────────────────────────
+output/*
+!output/.gitkeep

@@ -1,0 +1,175 @@
+# Phase 12 (ansible validate): Act 0 as Vault, HAProxy and the ticker report
+# it. Read-only (the one POST mints a 5-minute batch token to read Frankfurt,
+# which does not know the primary's service tokens). Writes
+# .build/gates/validation.json without a timestamp (idempotency).
+- name: Validate a normal day
+  hosts: localhost
+  gather_facts: false
+  vars:
+    boot_primary: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | first }}"
+    fra: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'performance') | first }}"
+    dub: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'dr') | first }}"
+  tasks:
+    - name: Find the primary
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+
+    - name: The primary is the bootstrap primary (no drill open)
+      ansible.builtin.assert:
+        that: vbal_primary.id == boot_primary.id
+        fail_msg: "{{ vbal_primary.id }} is primary: a drill is open (make failback)"
+        quiet: true
+
+    - name: Replication status of every site
+      ansible.builtin.uri:
+        url: "{{ item.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      loop: ["{{ boot_primary }}", "{{ fra }}", "{{ dub }}"]
+      loop_control:
+        label: "{{ item.id }}"
+      register: val_rep
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Every site has the role Vault should report
+      ansible.builtin.assert:
+        that:
+          - val_rep.results[0].json.data.performance.mode == 'primary'
+          - val_rep.results[0].json.data.dr.mode == 'primary'
+          - val_rep.results[1].json.data.performance.mode == 'secondary'
+          - val_rep.results[1].json.data.performance.state == 'stream-wals'
+          - val_rep.results[2].json.data.dr.mode == 'secondary'
+          - val_rep.results[2].json.data.dr.state == 'stream-wals'
+        quiet: true
+
+    - name: Three voters on the primary
+      ansible.builtin.uri:
+        url: "{{ boot_primary.nodes[0].addr }}/v1/sys/storage/raft/configuration"
+        ca_path: "{{ vbal_ca }}"
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+      register: val_raft_prim
+      check_mode: false  # a read; check mode must see the real state
+      failed_when: val_raft_prim.json.data.config.servers | selectattr('voter') | list | length != boot_primary.nodes | length
+      no_log: true
+
+    - name: A short batch token to read Frankfurt (gotcha 19)
+      ansible.builtin.uri:
+        url: "{{ boot_primary.nodes[0].addr }}/v1/auth/token/create/vbal-ansible-batch"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: { ttl: 5m }
+      register: val_batch
+      changed_when: false  # a 5-minute read credential, not state
+      check_mode: false
+      no_log: true
+
+    - name: Three voters on Frankfurt
+      ansible.builtin.uri:
+        url: "{{ fra.nodes[0].addr }}/v1/sys/storage/raft/configuration"
+        ca_path: "{{ vbal_ca }}"
+        headers:
+          X-Vault-Token: "{{ val_batch.json.auth.client_token }}"
+      register: val_raft_fra
+      check_mode: false  # a read; check mode must see the real state
+      failed_when: val_raft_fra.json.data.config.servers | selectattr('voter') | list | length != fra.nodes | length
+      no_log: true
+
+    - name: Every Dublin node answers as a DR secondary (472)
+      ansible.builtin.uri:
+        url: "{{ item.addr }}/v1/sys/health"
+        ca_path: "{{ vbal_ca }}"
+        status_code: [472]
+      loop: "{{ dub.nodes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Namespaces on Frankfurt (the paths filter)
+      ansible.builtin.uri:
+        url: "{{ fra.nodes[0].addr }}/v1/sys/namespaces"
+        ca_path: "{{ vbal_ca }}"
+        method: LIST
+        headers:
+          X-Vault-Token: "{{ val_batch.json.auth.client_token }}"
+      register: val_ns_fra
+      check_mode: false  # a read; check mode must see the real state
+      no_log: true
+
+    - name: Namespaces on the primary
+      ansible.builtin.uri:
+        url: "{{ boot_primary.nodes[0].addr }}/v1/sys/namespaces"
+        ca_path: "{{ vbal_ca }}"
+        method: LIST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+      register: val_ns_prim
+      check_mode: false  # a read; check mode must see the real state
+      no_log: true
+
+    - name: Payments-eu is on the primary and NOT on Frankfurt; payments is on both
+      ansible.builtin.assert:
+        that:
+          - "'payments-eu/' in val_ns_prim.json.data['keys']"
+          - "'payments/' in val_ns_prim.json.data['keys']"
+          - "'payments/' in val_ns_fra.json.data['keys']"
+          - "'payments-eu/' not in val_ns_fra.json.data['keys']"
+        quiet: true
+
+    - name: Front door state (HAProxy stats CSV)
+      ansible.builtin.uri:
+        url: "{{ vbal_stats_addr }}/stats;csv"
+        return_content: true
+      register: val_stats
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Count the servers that are up
+      ansible.builtin.set_fact:
+        val_up_primary: "{{ val_stats.content.split('\n') | select('match', '^primary,vault-') | select('search', ',UP,') | list | length }}"
+        val_up_regional: "{{ val_stats.content.split('\n') | select('match', '^regional,vault-') | select('search', ',UP,') | list | length }}"
+
+    - name: Writes go to exactly one server (the primary's active node), reads to all of Frankfurt
+      ansible.builtin.assert:
+        that:
+          - val_up_primary | int == 1
+          - val_up_regional | int == fra.nodes | length
+        fail_msg: "primary has {{ val_up_primary }} server(s) up, regional {{ val_up_regional }} (make frontdoor-status)"
+        quiet: true
+
+    - name: The ticker's metrics
+      ansible.builtin.command:
+        argv: [podman, exec, vbal-ticker, node, -e, "fetch('http://127.0.0.1:9100/metrics').then(r=>r.text()).then(t=>process.stdout.write(t))"]
+      register: val_ticker
+      changed_when: false
+      check_mode: false  # a read; check mode must see the real state
+
+    # 4 a second for 10 s is 40; 36 leaves room for timer jitter.
+    - name: The ticker writes four times a second and Frankfurt keeps up
+      ansible.builtin.assert:
+        that:
+          - (val_ticker.stdout | from_json).acked_10s | int >= 36
+          - (val_ticker.stdout | from_json).fail_10s | int == 0
+          - (val_ticker.stdout | from_json).regional_lag is not none
+          - (val_ticker.stdout | from_json).regional_lag | int <= 4
+        fail_msg: "ticker: {{ val_ticker.stdout | from_json | dict2items | selectattr('key', 'in', ['acked_10s', 'fail_10s', 'regional_lag', 'regional_error']) | items2dict }}"
+        quiet: true
+
+    - name: The DR operations token is valid for more than 2h, from the primary
+      ansible.builtin.set_fact:
+        val_dr_meta: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token.meta.json') | from_json }}"
+        val_now: "{{ lookup('ansible.builtin.pipe', 'date +%s') }}"
+
+    - name: Check it
+      ansible.builtin.assert:
+        that:
+          - val_dr_meta.site == vbal_primary.id
+          - (val_dr_meta.expires_at | int) - (val_now | int) > 7200
+        fail_msg: "DR token: issued by {{ val_dr_meta.site }}, {{ (((val_dr_meta.expires_at | int) - (val_now | int)) / 3600) | round(1) }}h left (make dr-token)"
+        quiet: true
+
+    - name: Record the validation gate (no timestamp, the recap says when)
+      ansible.builtin.copy:
+        dest: "{{ vbal_build_dir }}/gates/validation.json"
+        mode: "0644"
+        content: "{{ {'gate': 'validation', 'result': 'pass', 'primary': vbal_primary.id} | to_nice_json }}"

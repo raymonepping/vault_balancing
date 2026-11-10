@@ -1,0 +1,60 @@
+# make site-up SITE=<site>: start a stopped site: its seal Vault, unsealed
+# (gotcha 20), then its nodes (sites-up.sh). Refuses to start a site that went
+# down as primary while another site is primary now and it is not fenced:
+# it would come back believing it is primary (probe P11). Journals what each
+# node says it is, verbatim.
+- name: A site comes back
+  hosts: localhost
+  gather_facts: false
+  vars:
+    s: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: The fence list
+      ansible.builtin.set_fact:
+        su_fenced: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+
+    - name: Refuse an ex-primary that is not fenced
+      when:
+        - (drill_state.down.site | default('')) == site
+        - (drill_state.down.role_before | default('')) == 'primary'
+        - site not in su_fenced
+      block:
+        - name: Journal the refusal
+          ansible.builtin.include_tasks: tasks/journal.yml
+          vars:
+            j: { act: "IV", step: "site-up refused", target: "{{ site }}", request_path: null, http_code: null,
+                 vault_said: "{{ site }} went down as primary and is not fenced: make fence SITE={{ site }} first" }
+        - name: Stop
+          ansible.builtin.fail:
+            msg: "{{ site }} went down as primary and would come back believing it still is. Fence it first: make fence SITE={{ site }}"
+
+    - name: Start the site (seal Vault, unseal, nodes)
+      ansible.builtin.command:
+        argv: ["{{ vbal_root }}/scripts/sites-up.sh", "{{ site }}"]
+      changed_when: true
+
+    - name: What each node says it is
+      ansible.builtin.uri:
+        url: "{{ item.addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      loop: "{{ s.nodes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: su_status
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Journal it, verbatim
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "IV", step: "site-up", target: "{{ site }}", request_path: "sys/replication/status", http_code: 200,
+             vault_said: "{% for r in su_status.results %}{{ r.item.name }}: dr={{ r.json.data.dr.mode }} performance={{ r.json.data.performance.mode }}{{ '; ' if not loop.last }}{% endfor %}" }
+
+    - name: Clear the down site from the drill state
+      ansible.builtin.copy:
+        dest: "{{ drill_dir }}/state.json"
+        mode: "0644"
+        content: "{{ drill_state | combine({'down': None, 'returned': {'site': site, 'role_before': drill_state.down.role_before | default('unknown')}}) | to_nice_json }}"
+      when: (drill_state.down.site | default('')) == site

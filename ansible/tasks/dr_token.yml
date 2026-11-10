@@ -1,0 +1,60 @@
+# dr_token (D9): the DR operations batch token on the current primary
+# (vbal_primary, from find_primary.yml). Batch tokens cannot be renewed, so
+# it is minted when the file is missing, when another site issued it, or when
+# less than 4h is left. Written in place, 0600, with a non-secret .meta.json
+# (site, expiry, accessor fingerprint). Never printed.
+- name: Read the DR token's meta file
+  ansible.builtin.set_fact:
+    dr_token_meta: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token.meta.json', errors='ignore') | default('{}', true) | from_json }}"
+    dr_token_now: "{{ lookup('ansible.builtin.pipe', 'date +%s') | int }}"
+
+- name: Decide whether to mint
+  ansible.builtin.set_fact:
+    dr_token_mint: >-
+      {{ (dr_token_meta.site | default('')) != vbal_primary.id
+         or (dr_token_meta.expires_at | default(0) | int) - (dr_token_now | int) < 14400
+         or not (vbal_state_dir + '/dr-operation-token') is file }}
+
+- name: Mint a DR operations batch token on {{ vbal_primary.id }}
+  ansible.builtin.uri:
+    url: "{{ vbal_primary.nodes[0].addr }}/v1/auth/token/create/vbal-dr-operations"
+    ca_path: "{{ vbal_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vbal_platform_token }}"
+    body_format: json
+    body:
+      ttl: "{{ vbal_dr_token_ttl }}s"
+      display_name: "vbal-dr-operations-{{ vbal_primary.id }}"
+  register: dr_token_minted
+  when: dr_token_mint | bool
+  changed_when: true
+  no_log: true
+
+# Truncate and write the same inode; the token arrives on stdin, never argv.
+- name: Write it in place (0600)
+  ansible.builtin.command:
+    argv: [sh, -c, 'umask 077; touch "$1"; chmod 600 "$1"; cat >"$1"', sh, "{{ vbal_state_dir }}/dr-operation-token"]
+    stdin: "{{ dr_token_minted.json.auth.client_token }}"
+    stdin_add_newline: false
+  when: dr_token_mint | bool
+  changed_when: true
+  no_log: true
+
+- name: Write the meta file (site, expiry, accessor fingerprint)
+  ansible.builtin.copy:
+    dest: "{{ vbal_state_dir }}/dr-operation-token.meta.json"
+    mode: "0600"
+    content: >-
+      {{ {'site': vbal_primary.id,
+          'issued_at': dr_token_now | int,
+          'expires_at': (dr_token_now | int) + (vbal_dr_token_ttl | int),
+          'accessor_fp': (dr_token_minted.json.auth.accessor | hash('sha256'))[:8]} | to_nice_json }}
+  when: dr_token_mint | bool
+
+- name: Report the DR token (fingerprint and expiry only)
+  ansible.builtin.debug:
+    msg: >-
+      DR operations token: issued by {{ vbal_primary.id if dr_token_mint | bool else dr_token_meta.site }},
+      {{ 'minted now' if dr_token_mint | bool else 'kept' }},
+      {{ (((vbal_dr_token_ttl | int) if dr_token_mint | bool else (dr_token_meta.expires_at | int) - (dr_token_now | int)) / 3600) | round(1) }}h left

@@ -1,0 +1,25 @@
+# Phase 2 (ansible seal-init): each site's seal Vault from empty volume to
+# Shamir-unsealed, its two bootstrap policies written and the
+# tf-seal-<site> and ansible-seal-<site> tokens minted with the init root
+# token, which is then revoked (D6, D7).
+- name: Initialise every seal Vault
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Initialise seal-{{ site.id }}
+      ansible.builtin.include_role:
+        name: vault_init
+      vars:
+        vault_init_cluster: "seal-{{ site.id }}"
+        vault_init_addr: "{{ site.seal_addr }}"
+        vault_init_params: { secret_shares: 1, secret_threshold: 1 }
+        vault_init_policies:
+          - { name: vbal-tf-seal, file: vault/policies/bootstrap/vbal-tf-seal.hcl }
+          - { name: vbal-ansible-seal, file: vault/policies/bootstrap/vbal-ansible-seal.hcl }
+        vault_init_tokens:
+          - { name: "tf-seal-{{ site.id }}", policy: vbal-tf-seal, period: 768h }
+          - { name: "ansible-seal-{{ site.id }}", policy: vbal-ansible-seal, period: 768h }
+      loop: "{{ vbal_sites }}"
+      loop_control:
+        loop_var: site
+        label: "seal-{{ site.id }}"

@@ -1,0 +1,40 @@
+# cluster_bootstrap: for one site (cluster_bootstrap_site), after vault_init
+# initialised its node 1, wait for nodes 2 and 3 to join through retry_join and
+# unseal through Transit, then for three Raft voters (autopilot promotes a new
+# node after it is stable). The voter count is read with ansible-platform, so
+# this runs on the primary only; a secondary's voters are prompt 05's.
+- name: "Wait for every node to be unsealed (joined and auto-unsealed) ({{ cluster_bootstrap_site.id }})"
+  ansible.builtin.uri:
+    url: "{{ item.addr }}/v1/sys/health"
+    ca_path: "{{ vbal_ca }}"
+    status_code: [200, 429, 472, 473, 501, 503]
+  loop: "{{ cluster_bootstrap_site.nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: cluster_bootstrap_health
+  check_mode: false  # a read; check mode must see the real state
+  retries: 60
+  delay: 3
+  until: cluster_bootstrap_health.status in [200, 429, 472, 473]
+
+- name: "Wait for three Raft voters ({{ cluster_bootstrap_site.id }})"
+  ansible.builtin.uri:
+    url: "{{ cluster_bootstrap_site.nodes[0].addr }}/v1/sys/storage/raft/configuration"
+    ca_path: "{{ vbal_ca }}"
+    headers:
+      X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-platform') }}"
+  register: cluster_bootstrap_raft
+  check_mode: false  # a read; check mode must see the real state
+  retries: 60
+  delay: 3
+  until: (cluster_bootstrap_raft.json.data.config.servers | selectattr('voter') | list | length) == (cluster_bootstrap_site.nodes | length)
+  no_log: true
+  # After a failover this site may be a DR secondary (472), which refuses every token.
+  when: cluster_bootstrap_health.results[0].status != 472
+
+- name: "Report the voters ({{ cluster_bootstrap_site.id }})"
+  when: cluster_bootstrap_health.results[0].status != 472
+  ansible.builtin.debug:
+    msg: >-
+      {{ cluster_bootstrap_raft.json.data.config.servers | map(attribute='node_id') | join(', ') }} are voters;
+      leader {{ cluster_bootstrap_raft.json.data.config.servers | selectattr('leader') | map(attribute='node_id') | first }}

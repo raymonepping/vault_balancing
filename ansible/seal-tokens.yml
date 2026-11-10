@@ -1,0 +1,16 @@
+# Phase 4 (ansible seal-tokens): one seal token per node of every site, from
+# that site's token role autounseal (Terraform, phase 3), with
+# ansible-seal-<site>.
+- name: Issue the per-node seal tokens
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Seal tokens for {{ site.id }}
+      ansible.builtin.include_role:
+        name: seal_tokens
+      vars:
+        seal_tokens_site: "{{ site }}"
+      loop: "{{ vbal_sites }}"
+      loop_control:
+        loop_var: site
+        label: "{{ site.id }}"

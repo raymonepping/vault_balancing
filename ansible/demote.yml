@@ -1,0 +1,160 @@
+# Act IV (make demote SITE=<old primary> TO=<new primary>): the ghost becomes
+# a DR secondary of the new primary. Demote it (both kinds), then attach it
+# with a fresh activation id from the new primary and the DR operations token
+# (probe P12, P20). Refused unless the site is fenced. Unfence it after: it
+# answers 472, so the front door keeps it out of the writes anyway.
+- name: Act IV, demote the old primary
+  hosts: localhost
+  gather_facts: false
+  vars:
+    s: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+    p: "{{ vbal_sites | selectattr('id', 'eq', to) | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: The fence list
+      ansible.builtin.set_fact:
+        de_fenced: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+
+    - name: Refuse unless fenced
+      when: site not in de_fenced
+      block:
+        - name: Journal the refusal
+          ansible.builtin.include_tasks: tasks/journal.yml
+          vars:
+            j: { act: "IV", step: "demote refused", target: "{{ site }}", request_path: null, http_code: null, vault_said: "{{ site }} is not fenced: make fence SITE={{ site }}" }
+        - name: Stop
+          ansible.builtin.fail:
+            msg: "{{ site }} is not fenced: make fence SITE={{ site }} first."
+
+    - name: Its active node
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ s }}"
+
+    - name: What it says it is
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: de_status
+      check_mode: false  # a read; check mode must see the real state
+
+    # Performance first: after the DR demotion the site is a DR secondary,
+    # which refuses every token (403 for the performance demotion, found in
+    # the first drill).
+    - name: Demote it, performance then DR (its own token store still holds ansible-platform)
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/{{ item }}/primary/demote"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: {}
+        status_code: [200, 204, 400, 500]
+      loop: [performance, dr]
+      when: de_status.json.data[item].mode == 'primary'
+      register: de_demote
+      changed_when: true
+      no_log: true
+
+    - name: Journal Vault's answers
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "IV", step: "demote {{ r.item }}", target: "{{ site }}", request_path: "sys/replication/{{ r.item }}/primary/demote",
+             http_code: "{{ r.status }}", vault_said: "{{ (r.json.errors | default(['demoted']))[0] }}" }
+      loop: "{{ de_demote.results | selectattr('status', 'defined') | list }}"
+      loop_control:
+        loop_var: r
+        label: "{{ r.item }}"
+
+    - name: It reports itself a DR secondary (idle)
+      ansible.builtin.uri:
+        url: "{{ s.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: de_after
+      check_mode: false  # a read; check mode must see the real state
+      retries: 30
+      delay: 2
+      until: de_after.json.data.dr.mode | default('') == 'secondary'
+
+    - name: A fresh activation id from {{ to }}
+      ansible.builtin.include_tasks: tasks/next_id.yml
+      vars:
+        next_id_site: "{{ site }}"
+        next_id_kind: dr
+        next_id_prim: "{{ p }}"
+
+    - name: DR secondary activation token from {{ to }}
+      ansible.builtin.uri:
+        url: "{{ p.nodes[0].addr }}/v1/sys/replication/dr/primary/secondary-token"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: { id: "{{ next_id }}", ttl: 15m }
+      register: de_wrap
+      changed_when: true
+      no_log: true
+
+    - name: Its active node again (the demotion can move leadership)
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ s }}"
+
+    - name: Update-primary with the DR operations token
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/dr/secondary/update-primary"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token') }}"
+        body_format: json
+        body: { token: "{{ de_wrap.json.wrap_info.token }}", ca_file: /vault/config/tls/ca-chain.pem }
+        status_code: [200, 204, 400, 403, 500]
+      register: de_upd
+      changed_when: de_upd.status in [200, 204]
+      no_log: true
+
+    - name: Journal Vault's answer
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "IV", step: "attached as DR secondary", target: "{{ site }}", request_path: "sys/replication/dr/secondary/update-primary",
+             http_code: "{{ de_upd.status }}", vault_said: "{{ (de_upd.json.errors | default(['accepted, id ' ~ next_id]))[0] }}" }
+
+    - name: Stop when Vault refused
+      ansible.builtin.fail:
+        msg: "update-primary on {{ site }}: HTTP {{ de_upd.status }} {{ (de_upd.json.errors | default(['']))[0] }}"
+      when: de_upd.status not in [200, 204]
+
+    - name: It streams from {{ to }}
+      ansible.builtin.uri:
+        url: "{{ s.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: de_stream
+      check_mode: false  # a read; check mode must see the real state
+      retries: 90
+      delay: 2
+      until: de_stream.json.data.dr.state | default('') == 'stream-wals'
+
+    - name: Every node answers 472
+      ansible.builtin.uri:
+        url: "{{ item.addr }}/v1/sys/health"
+        ca_path: "{{ vbal_ca }}"
+        status_code: [472]
+      loop: "{{ s.nodes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: de_health
+      retries: 30
+      delay: 2
+      until: de_health.status == 472
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "IV", step: "streams as DR secondary", target: "{{ site }}", request_path: "sys/replication/status", http_code: 200,
+             vault_said: "dr=secondary state=stream-wals; every node answers 472" }

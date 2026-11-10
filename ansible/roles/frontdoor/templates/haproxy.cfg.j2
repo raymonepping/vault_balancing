@@ -1,0 +1,74 @@
+# haproxy.cfg: rendered by Ansible (role frontdoor) from config/sites.json and
+# .build/frontdoor/fenced.json. Do not edit: make frontdoor-up re-renders it.
+#
+# TLS passthrough (mode tcp): clients see Vault's own certificate and HAProxy
+# holds no key. Health checks speak HTTPS to each node's sys/health; the code
+# carries the node's role, so HAProxy follows Vault and never decides (D11):
+#   primary  (writes, :8443): accepts 200 only: the primary's active node
+#   regional (reads,  :8444): accepts 200 and 473: Frankfurt's three nodes
+# A fenced site's servers are rendered "disabled": the fence survives a
+# restart (probe P21). Check interval 1s, fall 2, rise 2 (D14).
+global
+  log stdout format raw local0 warning
+  stats socket ipv4@127.0.0.1:9999 level admin
+  maxconn 2000
+  # A reload must not keep old sessions (to a demoted node) alive for ever.
+  hard-stop-after 5s
+
+# A killed and restarted node can come back with a new IP address: resolve
+# through Podman's DNS (aardvark, from the container's resolv.conf) at run
+# time, not only at start (found in the first drill: L4TOUT after site-up).
+resolvers podman
+  parse-resolv-conf
+  hold valid 2s
+  hold obsolete 2s
+  timeout resolve 1s
+  timeout retry 1s
+
+defaults
+  mode tcp
+  log global
+  timeout connect 2s
+  timeout client 30s
+  timeout server 30s
+  # init-state down: after a (re)start a server takes traffic only after two
+  # good checks, so a 472 or 473 node is never "up" for the first seconds.
+  # on-marked-down shutdown-sessions: in TCP passthrough a client's kept-alive
+  # connection outlives the server's health; when a node stops answering 200
+  # (demoted, sealed) its sessions are cut, so clients reconnect to the new
+  # primary (found in the first drill: the ticker kept writing to demoted dub).
+  default-server resolvers podman resolve-prefer ipv4 init-addr libc,none init-state down on-marked-down shutdown-sessions inter 1s fall 2 rise 2 check-ssl verify required ca-file /etc/haproxy/ca.pem
+
+frontend writes
+  bind :8443
+  default_backend primary
+
+frontend reads
+  bind :8444
+  default_backend regional
+
+backend primary
+  option httpchk GET /v1/sys/health
+  http-check expect status 200
+{% for site in vbal_sites if site.bootstrap_role in ['primary', 'dr'] %}
+{% for node in site.nodes %}
+  server {{ node.name }} {{ node.name }}:8200 check{{ ' disabled' if site.id in frontdoor_fenced else '' }}
+{% endfor %}
+{% endfor %}
+
+backend regional
+  option httpchk GET /v1/sys/health
+  http-check expect status 200,473
+{% for site in vbal_sites if site.bootstrap_role == 'performance' %}
+{% for node in site.nodes %}
+  server {{ node.name }} {{ node.name }}:8200 check{{ ' disabled' if site.id in frontdoor_fenced else '' }}
+{% endfor %}
+{% endfor %}
+
+frontend stats
+  mode http
+  bind :8404
+  stats enable
+  stats uri /stats
+  stats refresh 2s
+  stats show-legends

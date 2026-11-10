@@ -1,0 +1,102 @@
+# Act IV (make fence SITE=<site> / make unfence SITE=<site>): keep a site out of
+# the front door, durably (D11, probe P21). The fence list
+# .build/frontdoor/fenced.json is rendered into haproxy.cfg as "disabled" (so
+# it survives a restart); the running HAProxy is changed through its runtime
+# socket at once (no reload, no re-check of the other servers). Unfencing a
+# site that still calls itself primary while another site is primary is
+# refused: that is split brain at the front door.
+- name: Act IV, the fence
+  hosts: localhost
+  gather_facts: false
+  vars:
+    s: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+    want: "{{ fence | bool }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: The fence list
+      ansible.builtin.set_fact:
+        fe_list: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+
+    - name: Before unfencing, what does the site say it is?
+      when: not want
+      block:
+        - name: Its replication status (unreachable is fine, a stopped site claims nothing)
+          ansible.builtin.uri:
+            url: "{{ s.nodes[0].addr }}/v1/sys/replication/status"
+            ca_path: "{{ vbal_ca }}"
+            timeout: 3
+          register: fe_status
+          failed_when: false
+          check_mode: false  # a read; check mode must see the real state
+
+        # Read the OTHER sites directly: find_primary skips fenced sites, so
+        # it could not unfence the only primary (ponytail review).
+        - name: What the other sites say they are
+          ansible.builtin.uri:
+            url: "{{ item.nodes[0].addr }}/v1/sys/replication/status"
+            ca_path: "{{ vbal_ca }}"
+            timeout: 3
+          loop: "{{ vbal_sites | rejectattr('id', 'eq', site) | list }}"
+          loop_control:
+            label: "{{ item.id }}"
+          register: fe_others
+          failed_when: false
+          check_mode: false  # a read; check mode must see the real state
+          when: (fe_status.json.data.dr.mode | default('')) == 'primary'
+
+        - name: Other sites that say primary
+          ansible.builtin.set_fact:
+            fe_other_primaries: >-
+              {{ (fe_others.results | default([]) | selectattr('json', 'defined')
+                  | selectattr('json.data.dr.mode', 'eq', 'primary') | map(attribute='item.id') | list) }}
+
+        - name: Refuse to unfence a second primary
+          when: fe_other_primaries | length > 0
+          block:
+            - name: Journal the refusal
+              ansible.builtin.include_tasks: tasks/journal.yml
+              vars:
+                j: { act: "IV", step: "unfence refused", target: "{{ site }}", request_path: "sys/replication/status", http_code: 200,
+                     vault_said: "{{ site }} says dr=primary while {{ fe_other_primaries | join(', ') }} is primary: demote it first (make demote SITE={{ site }} TO={{ fe_other_primaries[0] }})" }
+            - name: Stop
+              ansible.builtin.fail:
+                msg: "{{ site }} still says it is primary while {{ fe_other_primaries | join(', ') }} is: make demote SITE={{ site }} TO={{ fe_other_primaries[0] }} first."
+
+    - name: Write the fence list
+      ansible.builtin.copy:
+        dest: "{{ vbal_build_dir }}/frontdoor/fenced.json"
+        mode: "0644"
+        content: "{{ ((fe_list + [site]) | unique if want else fe_list | reject('eq', site) | list) | to_json }}"
+
+    - name: Render it into haproxy.cfg (durable), without a reload
+      ansible.builtin.include_role:
+        name: frontdoor
+      vars:
+        frontdoor_reload: false
+
+    - name: Change the running HAProxy through its runtime socket
+      ansible.builtin.command:
+        argv: [podman, exec, vbal-haproxy, sh, -c, "echo '{{ 'disable' if want else 'enable' }} server {{ backend }}/{{ item.name }}' | nc 127.0.0.1 9999"]
+      loop: "{{ s.nodes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        backend: "{{ 'regional' if s.bootstrap_role == 'performance' else 'primary' }}"
+      changed_when: true
+
+    - name: The front door shows it
+      ansible.builtin.include_tasks: tasks/frontdoor_wait.yml
+      vars:
+        fw_site: "{{ site }}"
+        fw_backend: "{{ 'regional' if s.bootstrap_role == 'performance' else 'primary' }}"
+        fw_state: "{{ '^MAINT' if want else '^(UP|DOWN)' }}"
+        fw_mode: all
+        fw_retries: 15
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "IV", step: "{{ 'fenced' if want else 'unfenced' }}", target: "{{ site }}", request_path: "HAProxy runtime socket + haproxy.cfg", http_code: null,
+             vault_said: "{{ s.nodes | map(attribute='name') | join(', ') }} {{ 'in MAINT' if want else 'back under health checks' }}" }

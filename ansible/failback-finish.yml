@@ -1,0 +1,42 @@
+# Act V, second half (make failback runs it after tf platform apply): Frankfurt
+# follows the home primary (on its own, or update-primary with an id whose
+# paths filter Terraform has just put on the active primary, gotcha 28), then
+# every write acknowledged during the failback is re-read on home: zero may be
+# missing.
+- name: Act V, Frankfurt and the zero-loss check
+  hosts: localhost
+  gather_facts: false
+  vars:
+    home: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | first }}"
+    fra: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'performance') | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: Window start
+      ansible.builtin.set_fact:
+        fb_start: "{{ drill_state.failback_start | default(now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] ~ 'Z') }}"
+
+    - name: Frankfurt follows home
+      ansible.builtin.include_tasks: tasks/follow.yml
+      vars:
+        fo_sec: "{{ fra }}"
+        fo_prim: "{{ home }}"
+        fo_act: "V"
+
+    - name: Every write acknowledged during the failback, re-read on {{ home.id }}
+      ansible.builtin.include_tasks: tasks/ticker_get.yml
+      vars:
+        tg_path: "/verify?from={{ fb_start }}&to={{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] }}Z"
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "V", step: "zero lost", target: "{{ home.id }}", request_path: "ticker /verify (the failback window)", http_code: null,
+             vault_said: "{{ tg.lost | length }} of {{ tg.checked }} acknowledged writes missing", lost: "{{ tg.lost | length }}", checked: "{{ tg.checked }}" }
+
+    - name: Zero acknowledged writes may be missing after a planned failback
+      ansible.builtin.assert:
+        that: tg.lost | length == 0
+        fail_msg: "{{ tg.lost | length }} acknowledged writes missing after the failback: {{ tg.lost[:5] }}"
+        quiet: true

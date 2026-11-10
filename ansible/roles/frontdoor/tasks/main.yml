@@ -1,0 +1,44 @@
+# frontdoor: render haproxy.cfg (D11) into .build/frontdoor/ (a directory
+# mount, so a new file is seen: gotcha 4) and, when it changed and HAProxy is
+# running, validate it inside the container and reload it (SIGUSR2 to the
+# master: no connection is dropped).
+- name: Ensure .build/frontdoor
+  ansible.builtin.file:
+    path: "{{ vbal_build_dir }}/frontdoor"
+    state: directory
+    mode: "0755"
+
+- name: Read the fence list
+  ansible.builtin.set_fact:
+    frontdoor_fenced: "{{ lookup('ansible.builtin.file', vbal_build_dir + '/frontdoor/fenced.json', errors='ignore') | default('[]', true) | from_json }}"
+
+- name: Render haproxy.cfg
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ vbal_build_dir }}/frontdoor/haproxy.cfg"
+    mode: "0644"
+  register: frontdoor_cfg
+
+- name: Is HAProxy running?
+  ansible.builtin.command:
+    argv: [podman, container, inspect, vbal-haproxy, --format, "{{ '{{' }}.State.Status{{ '}}' }}"]
+  register: frontdoor_state
+  changed_when: false
+  failed_when: false
+  check_mode: false  # a read; check mode must see the real state
+
+# The fence targets set frontdoor_reload=false: they change the running
+# process through the runtime socket (instant, no re-check of every server)
+# and render the config only so the fence survives the next start (D11).
+- name: Validate and reload when the config changed
+  when: frontdoor_cfg is changed and frontdoor_state.stdout == 'running' and frontdoor_reload | default(true) | bool
+  block:
+    - name: Haproxy -c inside the container
+      ansible.builtin.command:
+        argv: [podman, exec, vbal-haproxy, haproxy, -c, -q, -f, /usr/local/etc/haproxy/haproxy.cfg]
+      changed_when: false
+
+    - name: Reload (SIGUSR2 to the master process)
+      ansible.builtin.command:
+        argv: [podman, kill, --signal, USR2, vbal-haproxy]
+      changed_when: true

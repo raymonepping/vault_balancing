@@ -1,0 +1,126 @@
+# compose/app/compose.yaml: the ticker and its agent (prompt 05); the api and
+# the web situation room join in prompts 07 and 08.
+#
+# The agent's token sink is a tmpfs-backed volume shared with the ticker only:
+# ephemeral, owned by uid 100 / gid 1000, never on disk. The ticker's journal
+# and seq counter are persistent (io.vbal.data).
+services:
+  ticker-agent:
+    image: ${VAULT_ENT_IMAGE}
+    container_name: vbal-ticker_agent
+    hostname: ticker-agent
+    user: "100:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/vbal/entrypoint.sh"]
+    environment:
+      HOME: /tmp
+      VAULT_ADDR: https://frontdoor:8443
+      VAULT_CACERT: /vault/tls/ca-chain.pem
+      VAULT_NAMESPACE: payments
+      AGENT_NAME: ticker
+      TOKEN_FILE: /sink/token
+      APPROLE_DIR: /run/approle
+    volumes:
+      - ./agent/ticker.hcl:/vault/agent/config.hcl:ro
+      - ../common/agent/entrypoint.sh:/vbal/entrypoint.sh:ro
+      - ../../vault-tls/ca-chain.pem:/vault/tls/ca-chain.pem:ro
+      - ../../.secrets/approle/ticker:/run/approle:ro
+      - ticker-sink:/sink
+    restart: on-failure
+    mem_limit: 256m
+    networks: [default]
+
+  ticker:
+    image: ${VBAL_IMAGE_PREFIX}/ticker:${VBAL_IMAGE_TAG}
+    container_name: vbal-ticker
+    hostname: ticker
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    environment:
+      NODE_EXTRA_CA_CERTS: /tls/ca-chain.pem
+      TICKER_TICK_MS: ${VBAL_TICK_MS}
+      TICKER_TOKEN_FILE: /sink/token
+      TICKER_DATA_DIR: /data
+    volumes:
+      - ../../vault-tls/ca-chain.pem:/tls/ca-chain.pem:ro
+      - ticker-sink:/sink:ro
+      - ticker-journal:/data
+    depends_on: [ticker-agent]
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [default]
+
+  # The situation room API (prompts 07 and 12): no Vault token (D12). Reads
+  # the unauthenticated status endpoints of every node, HAProxy's stats, the
+  # ticker's metrics and .build (drill journals, layers) read-only. Signs
+  # people in through Keycloak and forwards an operator's drill step to the
+  # host runner (D16).
+  api:
+    image: ${VBAL_IMAGE_PREFIX}/api:${VBAL_IMAGE_TAG}
+    container_name: vbal-api
+    hostname: api
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    environment:
+      NODE_EXTRA_CA_CERTS: /tls/ca-chain.pem
+      API_SITES_FILE: /config/sites.json
+      API_DRILL_DIR: /build/drill
+      API_LAYERS_FILE: /build/layers.json
+      API_TLS_CERT: /tls/vault.crt
+      API_TLS_KEY: /tls/vault.key
+      # Sign-in and the drill buttons (prompt 12, D16).
+      KEYCLOAK_PUBLIC_URL: http://localhost:${VBAL_PORT_KEYCLOAK}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      CONSOLE_URL: https://localhost:${VBAL_PORT_WEB}
+      CONSOLE_CLIENT_SECRET_FILE: /run/secrets/console-client-secret
+      API_RUNNER_URL: http://host.containers.internal:${VBAL_PORT_RUNNER}
+      API_RUNNER_SECRET_FILE: /run/secrets/runner-secret
+    ports: ["127.0.0.1:${VBAL_PORT_API}:3000"]
+    volumes:
+      - ../../vault-tls:/tls:ro
+      - ../../config/sites.json:/config/sites.json:ro
+      - ../../.build:/build:ro
+      # Only these two identity files, never .secrets/identity itself.
+      - ../../.secrets/identity/console-client-secret:/run/secrets/console-client-secret:ro
+      - ../../.secrets/identity/runner-secret:/run/secrets/runner-secret:ro
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [default]
+
+  # The situation room (prompt 08): the built console behind nginx, TLS 1.3.
+  web:
+    image: ${VBAL_IMAGE_PREFIX}/web:${VBAL_IMAGE_TAG}
+    container_name: vbal-web
+    hostname: web
+    user: "101:101"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+      NGINX_ENVSUBST_OUTPUT_DIR: /tmp
+    ports: ["127.0.0.1:${VBAL_PORT_WEB}:8443"]
+    volumes:
+      - ../../vault-tls:/etc/nginx/tls:ro
+    tmpfs: [/tmp]
+    depends_on: [api]
+    restart: unless-stopped
+    mem_limit: 128m
+    networks: [default]
+
+networks:
+  default:
+    name: vbal-internal
+    external: true
+
+volumes:
+  ticker-sink:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=100,gid=1000,mode=0750" }
+  ticker-journal:
+    labels: { io.vbal.data: "true" }
+    driver_opts: { o: "uid=1000,gid=1000" }

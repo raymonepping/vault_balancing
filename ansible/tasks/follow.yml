@@ -1,0 +1,136 @@
+# follow: make performance secondary fo_sec stream from fo_prim. Waits up to
+# 20 s for it to follow on its own (probe: 5 s; first drill: 1 s; second drill:
+# not at all, it stayed on the dead primary), then update-primary.
+- name: "Does it follow {{ fo_prim.id }} on its own? ({{ fo_sec.id }})"
+  ansible.builtin.uri:
+    url: "{{ fo_sec.nodes[0].addr }}/v1/sys/replication/status"
+    ca_path: "{{ vbal_ca }}"
+  register: fo_status
+  check_mode: false  # a read; check mode must see the real state
+  retries: 20
+  delay: 1
+  until: >-
+    fo_status.json.data.performance.state | default('') == 'stream-wals'
+    and (fo_status.json.data.performance.primaries | default([]) | map(attribute='api_address')
+         | select('match', 'https://vault-' ~ fo_prim.id ~ '-') | list | length) > 0
+  failed_when: false
+
+- name: "Followed? ({{ fo_sec.id }})"
+  ansible.builtin.set_fact:
+    fo_followed: >-
+      {{ fo_status.json.data.performance.state | default('') == 'stream-wals'
+         and (fo_status.json.data.performance.primaries | default([]) | map(attribute='api_address')
+              | select('match', 'https://vault-' ~ fo_prim.id ~ '-') | list | length) > 0 }}
+
+- name: "Journal it ({{ fo_sec.id }})"
+  ansible.builtin.include_tasks: journal.yml
+  vars:
+    j: { act: "{{ fo_act }}", step: "{{ 'followed on its own' if fo_followed | bool else 'did not follow in 20 s' }}", target: "{{ fo_sec.id }}",
+         request_path: "sys/replication/status", http_code: 200,
+         vault_said: "performance state={{ fo_status.json.data.performance.state | default('?') }}, primaries={{ fo_status.json.data.performance.primaries | default([]) | map(attribute='api_address') | join(' ') }}, after {{ fo_status.attempts | default(1) }} s" }
+
+- name: "Update-primary (fallback) ({{ fo_sec.id }})"
+  when: not fo_followed | bool
+  block:
+    - name: "A fresh activation id ({{ fo_sec.id }})"
+      ansible.builtin.include_tasks: next_id.yml
+      vars:
+        next_id_site: "{{ fo_sec.id }}"
+        next_id_kind: performance
+        next_id_prim: "{{ fo_prim }}"
+
+    # Never attach with an id that has no paths filter: the denied namespace
+    # would replicate (gotcha 28). Vault keeps filters for unissued ids only
+    # until a restart; make up and make paths-filter declare them again.
+    - name: "The paths filter for the new id exists on {{ fo_prim.id }} ({{ next_id }})"
+      ansible.builtin.uri:
+        url: "{{ fo_prim.nodes[0].addr }}/v1/sys/replication/performance/primary/paths-filter/{{ next_id }}"
+        ca_path: "{{ vbal_ca }}"
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        status_code: [200, 404]
+      register: fo_filter
+      check_mode: false  # a read; check mode must see the real state
+      no_log: true
+
+    - name: "Refuse to attach without it ({{ next_id }})"
+      ansible.builtin.fail:
+        msg: "No paths filter for {{ next_id }} on {{ fo_prim.id }}: Frankfurt would receive payments-eu. Run make paths-filter, then make repoint again."
+      when: fo_filter.status != 200 or (fo_filter.json.data.mode | default('')) != 'deny'
+
+    - name: "Secondary activation token from {{ fo_prim.id }} ({{ fo_sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ fo_prim.nodes[0].addr }}/v1/sys/replication/performance/primary/secondary-token"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: { id: "{{ next_id }}", ttl: 15m }
+      register: fo_wrap
+      changed_when: true
+      no_log: true
+
+    - name: "A batch token from {{ fo_prim.id }} (gotcha 19) ({{ fo_sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ fo_prim.nodes[0].addr }}/v1/auth/token/create/vbal-ansible-batch"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: { ttl: 10m }
+      register: fo_batch
+      changed_when: false
+      no_log: true
+
+    - name: "Update-primary ({{ fo_sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ fo_sec.nodes[0].addr }}/v1/sys/replication/performance/secondary/update-primary"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ fo_batch.json.auth.client_token }}"
+        body_format: json
+        body: { token: "{{ fo_wrap.json.wrap_info.token }}", ca_file: /vault/config/tls/ca-chain.pem }
+        status_code: [200, 204, 400, 403, 500]
+      register: fo_upd
+      changed_when: fo_upd.status in [200, 204]
+      no_log: true
+
+    - name: "Journal Vault's answer ({{ fo_sec.id }})"
+      ansible.builtin.include_tasks: journal.yml
+      vars:
+        j: { act: "{{ fo_act }}", step: "update-primary", target: "{{ fo_sec.id }}", request_path: "sys/replication/performance/secondary/update-primary",
+             http_code: "{{ fo_upd.status }}", vault_said: "{{ (fo_upd.json.errors | default(['accepted, id ' ~ next_id]))[0] }}" }
+
+    - name: "Stop when Vault refused ({{ fo_sec.id }})"
+      ansible.builtin.fail:
+        msg: "update-primary on {{ fo_sec.id }}: HTTP {{ fo_upd.status }} {{ (fo_upd.json.errors | default(['']))[0] }}"
+      when: fo_upd.status not in [200, 204]
+
+    - name: "Streams from {{ fo_prim.id }} ({{ fo_sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ fo_sec.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: fo_after
+      check_mode: false  # a read; check mode must see the real state
+      retries: 90
+      delay: 2
+      until: fo_after.json.data.performance.state | default('') == 'stream-wals'
+
+- name: "The ticker reads it within 4 writes again ({{ fo_sec.id }})"
+  ansible.builtin.command:
+    argv: [podman, exec, vbal-ticker, node, -e, "fetch('http://127.0.0.1:9100/metrics').then(r=>r.text()).then(t=>process.stdout.write(t))"]
+  register: fo_lag
+  changed_when: false
+  check_mode: false  # a read; check mode must see the real state
+  retries: 60
+  delay: 1
+  until: (fo_lag.stdout | from_json).regional_lag is not none and (fo_lag.stdout | from_json).regional_lag | int <= 4
+
+- name: "Journal the lag ({{ fo_sec.id }})"
+  ansible.builtin.include_tasks: journal.yml
+  vars:
+    j: { act: "{{ fo_act }}", step: "lag normal", target: "{{ fo_sec.id }}", request_path: "ticker regional read", http_code: 200,
+         vault_said: "Frankfurt is {{ (fo_lag.stdout | from_json).regional_lag }} write(s) behind" }

@@ -1,0 +1,5 @@
+# Every play talks to an HTTPS API from the Mac; no SSH, no remote hosts.
+all:
+  hosts:
+    localhost:
+      ansible_connection: local

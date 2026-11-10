@@ -1,0 +1,118 @@
+# activate: make `sec` (an entry of vbal_sites) a `kind` (performance | dr)
+# secondary of `prim`, once. Skips when Vault already reports it as one.
+#   - a fresh activation id per attempt (gotcha 17: an id cannot be reused for
+#     about 30 minutes), counted in .secrets/vault/replication-ids.json
+#   - the activation token is a wrapping token, kept in memory only
+#   - the secondary is enabled with ITS OWN init root token (403 without it on
+#     2.x); that token dies with the secondary's token store (gotcha 16), so it
+#     is deleted from the init file right after
+#   - then its followers start and join (they were held back, gotcha 15)
+- name: "Replication status ({{ sec.id }})"
+  ansible.builtin.uri:
+    url: "{{ sec.nodes[0].addr }}/v1/sys/replication/status"
+    ca_path: "{{ vbal_ca }}"
+  register: activate_status
+  check_mode: false  # a read; check mode must see the real state
+
+- name: "Activate as {{ kind }} secondary of {{ prim.id }} ({{ sec.id }})"
+  when: activate_status.json.data[kind].mode != 'secondary'
+  block:
+    - name: "Read its init file ({{ sec.id }})"
+      ansible.builtin.set_fact:
+        activate_init: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/vault-' + sec.id + '-init.json') | from_json }}"
+      no_log: true
+
+    - name: "Its own root token must still be there ({{ sec.id }})"
+      ansible.builtin.assert:
+        that: "'root_token' in activate_init"
+        fail_msg: >-
+          vault-{{ sec.id }} is not a {{ kind }} secondary and its init root token is gone: it cannot be
+          activated without a root token on 2.x. Rebuild the site (make site-destroy SITE={{ sec.id }}, make lab).
+        quiet: true
+
+    - name: "A fresh activation id ({{ sec.id }})"
+      ansible.builtin.include_tasks: next_id.yml
+      vars:
+        next_id_site: "{{ sec.id }}"
+        next_id_kind: "{{ kind }}"
+        next_id_prim: "{{ prim }}"
+
+    - name: "Secondary activation token from {{ prim.id }} ({{ sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ prim.nodes[0].addr }}/v1/sys/replication/{{ kind }}/primary/secondary-token"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body:
+          id: "{{ next_id }}"
+          ttl: 15m
+      register: activate_wrap
+      changed_when: true
+      no_log: true
+
+    - name: "{{ kind }}/secondary/enable with its own root token ({{ sec.id }})"
+      ansible.builtin.uri:
+        url: "{{ sec.nodes[0].addr }}/v1/sys/replication/{{ kind }}/secondary/enable"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ activate_init.root_token }}"
+        body_format: json
+        body:
+          token: "{{ activate_wrap.json.wrap_info.token }}"
+          ca_file: /vault/config/tls/ca-chain.pem
+        status_code: [200, 204]
+      changed_when: true
+      no_log: true
+
+    - name: "Drop the dead root token from the init file (gotcha 16) ({{ sec.id }})"
+      ansible.builtin.copy:
+        dest: "{{ vbal_state_dir }}/vault-{{ sec.id }}-init.json"
+        mode: "0600"
+        content: "{{ activate_init | dict2items | rejectattr('key', 'eq', 'root_token') | items2dict | to_nice_json }}"
+      no_log: true
+
+- name: "Wait until it streams from {{ prim.id }} ({{ sec.id }})"
+  ansible.builtin.uri:
+    url: "{{ sec.nodes[0].addr }}/v1/sys/replication/status"
+    ca_path: "{{ vbal_ca }}"
+  register: activate_stream
+  check_mode: false  # a read; check mode must see the real state
+  retries: 90
+  delay: 2
+  until: activate_stream.json.data[kind].state | default('') == 'stream-wals'
+
+- name: "Which followers answer? ({{ sec.id }})"
+  ansible.builtin.uri:
+    url: "{{ item.addr }}/v1/sys/health"
+    ca_path: "{{ vbal_ca }}"
+    timeout: 3
+    status_code: [200, 429, 472, 473, 501, 503, -1]
+  loop: "{{ sec.nodes[1:] }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: activate_followers
+  check_mode: false  # a read; check mode must see the real state
+  failed_when: false
+
+- name: "Start its followers (they join through retry_join) ({{ sec.id }})"
+  ansible.builtin.command:
+    argv: ["{{ vbal_root }}/scripts/sites-up.sh", --followers, "{{ sec.id }}"]
+  when: activate_followers.results | rejectattr('status', 'in', [200, 429, 472, 473]) | list | length > 0
+  changed_when: true
+
+- name: "Every node answers as a secondary node (DR: 472; performance: 200 or 473) ({{ sec.id }})"
+  ansible.builtin.uri:
+    url: "{{ item.addr }}/v1/sys/health"
+    ca_path: "{{ vbal_ca }}"
+    status_code: [200, 429, 472, 473, 501, 503]
+  loop: "{{ sec.nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: activate_health
+  check_mode: false  # a read; check mode must see the real state
+  retries: 60
+  delay: 3
+  until: activate_health.status in ([472] if kind == 'dr' else [200, 473])

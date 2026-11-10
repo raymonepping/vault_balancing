@@ -1,0 +1,227 @@
+# vault_init: vault_codex's four-case init table as tasks, for one cluster. Cases:
+#   1 not initialised, no init file    -> init, save keys (0600)
+#   2 initialised and sealed           -> unseal with the saved key
+#   3 initialised, root still in file  -> policies, scoped tokens, revoke root
+#   4 initialised, no root (normal)    -> check the scoped tokens still work
+# Anything else (keys without storage, storage without keys) stops with the fix.
+- name: Ensure .secrets/vault and its token directory (0700)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: ["{{ vbal_state_dir }}", "{{ vbal_tokens_dir }}"]
+
+- name: Read the seal status
+  ansible.builtin.uri:
+    url: "{{ vault_init_addr }}/v1/sys/seal-status"
+    ca_path: "{{ vbal_ca }}"
+  register: vault_init_status
+  check_mode: false  # a read; check mode must see the real state
+  retries: 45
+  delay: 2
+  until: vault_init_status.status == 200
+
+- name: Look for the saved init material
+  ansible.builtin.stat:
+    path: "{{ vbal_state_dir }}/{{ vault_init_cluster }}-init.json"
+  register: vault_init_file
+
+- name: Refuse storage without keys
+  ansible.builtin.fail:
+    msg: "{{ vault_init_cluster }} is initialised but .secrets/vault/{{ vault_init_cluster }}-init.json is missing. Restore it from backups/."
+  when: vault_init_status.json.initialized and not vault_init_file.stat.exists
+
+- name: Refuse keys without storage
+  ansible.builtin.fail:
+    msg: >-
+      {{ vault_init_cluster }} has saved keys but uninitialised storage: its volume was lost.
+      Restore the volume, or move .secrets/vault/{{ vault_init_cluster }}-init.json to .secrets/legacy/.
+  when: not vault_init_status.json.initialized and vault_init_file.stat.exists
+
+- name: Initialise (case 1)
+  when: not vault_init_status.json.initialized
+  block:
+    - name: PUT sys/init
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/sys/init"
+        ca_path: "{{ vbal_ca }}"
+        method: PUT
+        body_format: json
+        body: "{{ vault_init_params }}"
+      register: vault_init_response
+      changed_when: true
+      no_log: true
+
+    # The CLI's field names, so scripts/vault-unseal.sh and root-regen.sh read it.
+    - name: Save the init material (0600)
+      ansible.builtin.copy:
+        dest: "{{ vbal_state_dir }}/{{ vault_init_cluster }}-init.json"
+        mode: "0600"
+        content: >-
+          {{ {'unseal_keys_b64': vault_init_response.json.keys_base64 | default([]),
+              'recovery_keys_b64': vault_init_response.json.recovery_keys_base64 | default([]),
+              'root_token': vault_init_response.json.root_token} | to_nice_json }}
+      no_log: true
+
+- name: Read the saved init material
+  ansible.builtin.slurp:
+    src: "{{ vbal_state_dir }}/{{ vault_init_cluster }}-init.json"
+  register: vault_init_saved
+  no_log: true
+
+- name: Parse it
+  ansible.builtin.set_fact:
+    vault_init_json: "{{ vault_init_saved.content | b64decode | from_json }}"
+  no_log: true
+
+- name: Use a user-regenerated root token (make root-regen), never revoking it here
+  ansible.builtin.set_fact:
+    vault_init_json: "{{ vault_init_json | combine({'root_token': lookup('ansible.builtin.file', vbal_root_file)}) }}"
+    vault_init_revoke_root: false
+  no_log: true
+  when: vbal_root_file is defined
+
+- name: Unseal (case 2, Shamir only)
+  ansible.builtin.uri:
+    url: "{{ vault_init_addr }}/v1/sys/unseal"
+    ca_path: "{{ vbal_ca }}"
+    method: PUT
+    body_format: json
+    body:
+      key: "{{ vault_init_json.unseal_keys_b64[0] }}"
+  changed_when: true
+  no_log: true
+  when:
+    - vault_init_json.unseal_keys_b64 | length > 0
+    - vault_init_status.json.sealed or not vault_init_status.json.initialized
+
+# Unsealed is not serving: wait for an active node (200) or a standby that
+# serves through one (429 standby, 473 perf standby). 472 is a DR secondary:
+# it serves nothing, but it answers. After a restart another node may lead
+# the cluster; a standby forwards the writes below.
+- name: Wait until this node serves (active or standby, not just unsealed)
+  ansible.builtin.uri:
+    url: "{{ vault_init_addr }}/v1/sys/health"
+    ca_path: "{{ vbal_ca }}"
+    status_code: [200, 429, 472, 473, 501, 503]
+  register: vault_init_health
+  check_mode: false  # a read; check mode must see the real state
+  retries: 60
+  delay: 2
+  until: vault_init_health.status in [200, 429, 472, 473]
+
+- name: Policies and scoped tokens with the init root token (case 3)
+  when: "'root_token' in vault_init_json and not vault_init_keep_root"
+  block:
+    - name: Write the bootstrap policies
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/sys/policies/acl/{{ item.name }}"
+        ca_path: "{{ vbal_ca }}"
+        method: PUT
+        headers:
+          X-Vault-Token: "{{ vault_init_json.root_token }}"
+        body_format: json
+        body:
+          policy: "{{ lookup('ansible.builtin.file', vbal_root + '/' + item.file) }}"
+        status_code: [204]
+      loop: "{{ vault_init_policies }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      no_log: true
+
+    - name: Is each scoped token file present and accepted?
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/auth/token/lookup-self"
+        ca_path: "{{ vbal_ca }}"
+        headers:
+          X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/' + item.name, errors='ignore') | default('none', true) }}"
+        status_code: [200, 400, 403]
+      loop: "{{ vault_init_tokens }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: vault_init_lookup
+      check_mode: false  # a read; check mode must see the real state
+      no_log: true
+
+    - name: Mint the missing scoped tokens (orphan; no token role, so a holder cannot mint more)
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/auth/token/create-orphan"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_init_json.root_token }}"
+        body_format: json
+        body: "{{ {'policies': [item.item.policy], 'display_name': 'vbal-' + item.item.name, 'renewable': item.item.period is defined}
+                  | combine({'period': item.item.period} if item.item.period is defined else {'ttl': item.item.ttl}) }}"
+      loop: "{{ vault_init_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.status != 200
+      register: vault_init_minted
+      changed_when: true
+      no_log: true
+
+    - name: Save each new token (0600)
+      ansible.builtin.copy:
+        dest: "{{ vbal_tokens_dir }}/{{ item.item.item.name }}"
+        content: "{{ item.json.auth.client_token }}"
+        mode: "0600"
+      loop: "{{ vault_init_minted.results | selectattr('json', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.item.item.name }}"
+      no_log: true
+
+    - name: Revoke the init root token (D6)
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/auth/token/revoke-self"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_init_json.root_token }}"
+        status_code: [204]
+      changed_when: true
+      no_log: true
+      when: vault_init_revoke_root | default(true)
+
+    - name: Prove the root token is gone before dropping it from the file
+      ansible.builtin.uri:
+        url: "{{ vault_init_addr }}/v1/auth/token/lookup-self"
+        ca_path: "{{ vbal_ca }}"
+        headers:
+          X-Vault-Token: "{{ vault_init_json.root_token }}"
+        status_code: [403]
+      no_log: true
+      when: vault_init_revoke_root | default(true)
+
+    - name: Drop root_token from the init file
+      ansible.builtin.copy:
+        dest: "{{ vbal_state_dir }}/{{ vault_init_cluster }}-init.json"
+        mode: "0600"
+        content: "{{ vault_init_json | dict2items | rejectattr('key', 'eq', 'root_token') | items2dict | to_nice_json }}"
+      no_log: true
+      when: vault_init_revoke_root | default(true)
+
+- name: Without a root token, every long-lived scoped token must still work (case 4)
+  ansible.builtin.uri:
+    url: "{{ vault_init_addr }}/v1/auth/token/lookup-self"
+    ca_path: "{{ vbal_ca }}"
+    headers:
+      X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/' + item.name, errors='ignore') | default('none', true) }}"
+  loop: "{{ vault_init_tokens | selectattr('period', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: vault_init_check
+  check_mode: false  # a read; check mode must see the real state
+  failed_when: vault_init_check.status != 200
+  no_log: true
+  when:
+    - "'root_token' not in vault_init_json and not vault_init_keep_root"
+    - vault_init_health.status != 472  # a DR secondary refuses every token: nothing to check there
+
+- name: A secondary-to-be keeps its root token for activation (D6), and nothing else
+  ansible.builtin.debug:
+    msg: >-
+      {{ vault_init_cluster }} is initialised; its root token stays in
+      .secrets/vault/{{ vault_init_cluster }}-init.json until replicate activates it.
+  when: vault_init_keep_root

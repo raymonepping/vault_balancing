@@ -1,6 +1,23 @@
 version: 2
 updates:
-  - package-ecosystem: "terraform"
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+  # The console and the Playwright suite (the API has no dependencies).
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/e2e"
+    schedule:
+      interval: "weekly"
+  # The Terraform provider pin (hashicorp/vault 5.13.0) in each root.
+  - package-ecosystem: "terraform"
+    directories: ["/terraform/seal", "/terraform/platform", "/terraform/probe"]
+    schedule:
+      interval: "weekly"
+# Container images (Vault, Node, nginx, alpine, Keycloak) are pinned in
+# config/defaults.conf, which Dependabot cannot read: bump them there and run
+# make verify, make rehearsal, make test-ui and make probe after an upgrade.

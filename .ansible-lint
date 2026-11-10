@@ -1,0 +1,6 @@
+# .ansible-lint: one rule off, on purpose.
+# name[template]: the drill's task names carry the sites in the middle
+# ("Wait until fra streams from dub"), because that is how the play log is
+# read during a drill. Every other rule stays on (make lint, CI).
+skip_list:
+  - name[template]

@@ -1,0 +1,20 @@
+# Act III (make repoint SITE=<performance secondary> TO=<new primary>):
+# Frankfurt follows. After an unplanned DR promotion it reconnects to the
+# promoted cluster ON ITS OWN (probe P10, gotcha 22): this waits for Vault to
+# say so. Only when it has not followed within 20 s does it run
+# update-primary, with a fresh activation id and a batch token minted on the
+# new primary (the performance secondary does not know the primary's service
+# tokens, gotcha 19). failback.yml uses the same tasks.
+- name: Act III, Frankfurt follows
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: Follow
+      ansible.builtin.include_tasks: tasks/follow.yml
+      vars:
+        fo_sec: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+        fo_prim: "{{ vbal_sites | selectattr('id', 'eq', to) | first }}"
+        fo_act: "III"

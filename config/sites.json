@@ -1,0 +1,7 @@
+{
+  "sites": [
+    { "id": "ams", "name": "Amsterdam", "role": "primary", "nodes": 3 },
+    { "id": "fra", "name": "Frankfurt", "role": "performance", "nodes": 3 },
+    { "id": "dub", "name": "Dublin", "role": "dr", "nodes": 3 }
+  ]
+}

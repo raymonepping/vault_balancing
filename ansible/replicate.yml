@@ -1,0 +1,103 @@
+# Phase 8 (ansible replicate): Act 0's replication. The bootstrap primary
+# (ams) becomes performance primary and DR primary; Frankfurt is activated as
+# its performance secondary, Dublin as its DR secondary (each with its own root
+# token, once); both stream. Then the DR operations token (D9) and the
+# ticker's credential. Every step detects its finished state: a re-run on a
+# converged lab is changed=0. It refuses to run while a drill has moved the
+# primary elsewhere (make failback first).
+- name: Replicate
+  hosts: localhost
+  gather_facts: false
+  vars:
+    prim: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'primary') | first }}"
+    perf_sec: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'performance') | list }}"
+    dr_sec: "{{ vbal_sites | selectattr('bootstrap_role', 'eq', 'dr') | list }}"
+    vbal_platform_token: "{{ lookup('ansible.builtin.file', vbal_tokens_dir + '/ansible-platform') }}"
+  tasks:
+    - name: "Replication status ({{ prim.id }})"
+      ansible.builtin.uri:
+        url: "{{ prim.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: rep_prim
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: The bootstrap primary must be primary (or not replicating yet)
+      ansible.builtin.assert:
+        that:
+          - rep_prim.json.data.dr.mode in ['primary', 'disabled']
+          - rep_prim.json.data.performance.mode in ['primary', 'disabled']
+        fail_msg: >-
+          {{ prim.id }} reports dr={{ rep_prim.json.data.dr.mode }}, performance={{ rep_prim.json.data.performance.mode }}:
+          a drill moved the primary. Finish it (make failback) before make lab.
+        quiet: true
+
+    - name: "Enable {{ item }} primary ({{ prim.id }})"
+      ansible.builtin.uri:
+        url: "{{ prim.nodes[0].addr }}/v1/sys/replication/{{ item }}/primary/enable"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vbal_platform_token }}"
+        body_format: json
+        body: {}
+        status_code: [200, 204]
+      loop: [performance, dr]
+      when: rep_prim.json.data[item].mode == 'disabled'
+      changed_when: true
+      no_log: true
+
+    - name: "Serves again as primary of both kinds ({{ prim.id }})"
+      ansible.builtin.uri:
+        url: "{{ prim.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: rep_prim_after
+      check_mode: false  # a read; check mode must see the real state
+      retries: 60
+      delay: 2
+      until:
+        - rep_prim_after.json.data.dr.mode | default('') == 'primary'
+        - rep_prim_after.json.data.performance.mode | default('') == 'primary'
+
+    - name: Activate the performance secondaries
+      ansible.builtin.include_tasks: tasks/activate.yml
+      vars:
+        sec: "{{ item }}"
+        kind: performance
+      loop: "{{ perf_sec }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Activate the DR secondaries
+      ansible.builtin.include_tasks: tasks/activate.yml
+      vars:
+        sec: "{{ item }}"
+        kind: dr
+      loop: "{{ dr_sec }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Replication lag right after activation (WAL index of each secondary vs the primary)
+      ansible.builtin.uri:
+        url: "{{ item.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      loop: "{{ [prim] + perf_sec + dr_sec }}"
+      loop_control:
+        label: "{{ item.id }}"
+      register: rep_lag
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Report it
+      ansible.builtin.debug:
+        msg: >-
+          {% for r in rep_lag.results %}{{ r.item.id }}:
+          perf {{ r.json.data.performance.mode }} {{ r.json.data.performance.last_wal | default(r.json.data.performance.last_remote_wal | default('-')) }},
+          dr {{ r.json.data.dr.mode }} {{ r.json.data.dr.last_wal | default(r.json.data.dr.last_remote_wal | default('-')) }}{{ '; ' if not loop.last }}{% endfor %}
+
+    - name: Find the primary (for the hand-overs)
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+
+    - name: The DR operations token (D9)
+      ansible.builtin.include_tasks: tasks/dr_token.yml
+
+    - name: The ticker's credential
+      ansible.builtin.include_tasks: tasks/ticker_secret.yml

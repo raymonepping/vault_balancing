@@ -1,0 +1,133 @@
+# Act II (make promote SITE=<dr secondary>): the decision. Promote the DR
+# secondary with the DR operations token minted before the primary died (D9,
+# probe P8). HAProxy routes to it on its own once it answers 200. Then the
+# numbers: the first acknowledged write after the outage (RTO) and every
+# acknowledged write of the last minute before it, re-read (RPO). Last, a
+# fresh DR token from the new primary (P20).
+- name: Act II, the decision
+  hosts: localhost
+  gather_facts: false
+  vars:
+    s: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: What the site is (Vault's own answer)
+      ansible.builtin.uri:
+        url: "{{ s.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+      register: pr_status
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Refuse unless it is a DR secondary
+      when: pr_status.json.data.dr.mode != 'secondary'
+      block:
+        - name: Journal the refusal
+          ansible.builtin.include_tasks: tasks/journal.yml
+          vars:
+            j: { act: "II", step: "refused", target: "{{ site }}", request_path: "sys/replication/status", http_code: 200,
+                 vault_said: "dr={{ pr_status.json.data.dr.mode }}: only a DR secondary can be promoted" }
+        - name: Stop
+          ansible.builtin.fail:
+            msg: "{{ site }} is not a DR secondary (Vault says dr={{ pr_status.json.data.dr.mode }}); nothing to promote."
+
+    - name: The site's active node
+      ansible.builtin.include_tasks: tasks/active_node.yml
+      vars:
+        an_site: "{{ s }}"
+
+    - name: Journal the decision
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "promote", target: "{{ site }}", request_path: "sys/replication/dr/secondary/promote", http_code: null,
+             vault_said: "operator decided: promote {{ site }} with the DR operations token" }
+
+    - name: Promote with the DR operations batch token (X-Vault-Token, gotcha 24)
+      ansible.builtin.uri:
+        url: "{{ active_addr }}/v1/sys/replication/dr/secondary/promote"
+        ca_path: "{{ vbal_ca }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ lookup('ansible.builtin.file', vbal_state_dir + '/dr-operation-token') }}"
+        body_format: json
+        body: {}
+        status_code: [200, 204, 400, 403, 500]
+      register: pr_call
+      changed_when: pr_call.status in [200, 204]
+      no_log: true
+
+    - name: Journal Vault's answer
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "promote answered", target: "{{ site }}", request_path: "sys/replication/dr/secondary/promote",
+             http_code: "{{ pr_call.status }}", vault_said: "{{ (pr_call.json.errors | default(['promoted']))[0] }}" }
+
+    - name: Stop when Vault refused
+      ansible.builtin.fail:
+        msg: "Vault refused the promotion: HTTP {{ pr_call.status }} {{ (pr_call.json.errors | default(['']))[0] }}"
+      when: pr_call.status not in [200, 204]
+
+    - name: The front door routes writes to it on its own (it answers 200)
+      ansible.builtin.include_tasks: tasks/frontdoor_wait.yml
+      vars:
+        fw_site: "{{ site }}"
+        fw_backend: primary
+        fw_state: "^UP"
+        fw_mode: any
+        fw_retries: 120
+
+    - name: Journal the routing
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "front door routes to it", target: "{{ site }}", request_path: "GET /v1/sys/health", http_code: 200,
+             vault_said: "{{ site }}'s active node answers 200" }
+
+    # The outage as clients saw it: from the first failed write after the
+    # site-down moment to the first acknowledged write after it (the RTO).
+    - name: The first acknowledged write after the outage (the RTO clock stops)
+      ansible.builtin.command:
+        argv: [podman, exec, vbal-ticker, node, -e, "fetch('http://127.0.0.1:9100/gap?after={{ drill_state.down.at }}').then(r=>r.text()).then(t=>process.stdout.write(t))"]
+      register: pr_gap
+      changed_when: false
+      check_mode: false  # a read; check mode must see the real state
+      retries: 120
+      delay: 1
+      until: (pr_gap.stdout | from_json).first_ok_after is not none
+      when: drill_state.down is defined
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "first write", target: "{{ site }}", request_path: "POST payments/kv/data/ticker/<slot> (front door)", http_code: 200,
+             vault_said: "seq {{ (pr_gap.stdout | from_json).first_ok_after.seq }} acknowledged; the first failed write was seq {{ (pr_gap.stdout | from_json).first_error.seq }}",
+             first_error_at: "{{ (pr_gap.stdout | from_json).first_error.sent_at }}",
+             last_ok_before_at: "{{ ((pr_gap.stdout | from_json).last_ok_before | default({}, true)).sent_at | default(None) }}",
+             first_ok_sent_at: "{{ (pr_gap.stdout | from_json).first_ok_after.sent_at }}" }
+      when: drill_state.down is defined
+
+    - name: The writes of the last minute before the outage, re-read through the front door (RPO)
+      ansible.builtin.include_tasks: tasks/ticker_get.yml
+      vars:
+        tg_path: "/verify?to={{ drill_state.down.at }}&seconds=60"
+      when: drill_state.down is defined
+
+    - name: Journal the RPO
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "rpo", target: "{{ site }}", request_path: "ticker /verify (the minute before the outage)", http_code: null,
+             vault_said: "{{ tg.lost | length }} of {{ tg.checked }} acknowledged writes missing on {{ site }}{{ (', first ' ~ tg.lost[0].seq ~ ' last ' ~ tg.lost[-1].seq) if tg.lost | length > 0 else '' }}; {{ tg.overwritten }} overwritten, {{ tg.unreadable }} unreadable",
+             lost: "{{ tg.lost | length }}", checked: "{{ tg.checked }}" }
+      when: drill_state.down is defined
+
+    - name: The new primary
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+
+    - name: A fresh DR operations token from it (D9)
+      ansible.builtin.include_tasks: tasks/dr_token.yml
+
+    - name: Journal it
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "II", step: "dr token", target: "{{ vbal_primary.id }}", request_path: "auth/token/create/vbal-dr-operations", http_code: null,
+             vault_said: "{{ 'minted on ' ~ vbal_primary.id if dr_token_mint | bool else 'kept (from ' ~ dr_token_meta.site ~ ')' }}" }

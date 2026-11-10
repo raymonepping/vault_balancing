@@ -1,0 +1,44 @@
+# vault-@SITE@-<n>: one of three Raft voters of site @SITE@. Auto-unseals
+# through this site's seal Vault with its own seal token (scripts/vault-server.sh
+# reads it from /run/secrets/transit-token; it is not in this file). Joins
+# only the peers of its own site. Writes its own audit log (/vault/audit).
+# Rendered at container start by scripts/vault-server.sh: @HOST@, @SITE@, and
+# one retry_join block per peer at the @RETRY_JOIN@ line.
+ui            = true
+disable_mlock = true
+
+api_addr     = "https://@HOST@:8200"
+cluster_addr = "https://@HOST@:8201"
+
+default_lease_ttl = "1h"
+max_lease_ttl     = "2160h"
+
+seal "transit" {
+  address     = "https://seal-@SITE@:8200"
+  key_name    = "autounseal"
+  mount_path  = "transit/"
+  tls_ca_cert = "/vault/config/tls/ca-chain.pem"
+}
+
+listener "tcp" {
+  address         = "0.0.0.0:8200"
+  tls_cert_file   = "/vault/config/tls/vault.crt"
+  tls_key_file    = "/vault/config/tls/vault.key"
+  tls_min_version = "tls13"
+}
+
+storage "raft" {
+  path    = "/vault/file"
+  node_id = "@HOST@"
+  @RETRY_JOIN@
+}
+
+log_level = "warn"
+
+# AppRole user lockout, bounded: Vault's default (5 failures, 15 minutes)
+# outlasts a secret-id repair (vault_codex gotcha).
+user_lockout "approle" {
+  lockout_threshold     = 5
+  lockout_duration      = "30s"
+  lockout_counter_reset = "30s"
+}

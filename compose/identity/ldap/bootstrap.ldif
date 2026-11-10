@@ -1,0 +1,66 @@
+# compose/identity/ldap/bootstrap.ldif: the lab's directory (D15). Fictional
+# people, no passwords (setup_ldap.sh sets them from .secrets/identity).
+#
+#   vera   viewer                       watches the situation room
+#   oscar  viewer + operator            runs the drill from the console
+#   ada    viewer + operator + admin    the presenter
+
+dn: ou=people,dc=balancing,dc=lab
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=balancing,dc=lab
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=system,dc=balancing,dc=lab
+objectClass: organizationalUnit
+ou: system
+
+dn: uid=vera,ou=people,dc=balancing,dc=lab
+objectClass: inetOrgPerson
+uid: vera
+cn: Vera Viewer
+sn: Viewer
+givenName: Vera
+mail: vera@balancing.lab
+
+dn: uid=oscar,ou=people,dc=balancing,dc=lab
+objectClass: inetOrgPerson
+uid: oscar
+cn: Oscar Operator
+sn: Operator
+givenName: Oscar
+mail: oscar@balancing.lab
+
+dn: uid=ada,ou=people,dc=balancing,dc=lab
+objectClass: inetOrgPerson
+uid: ada
+cn: Ada Admin
+sn: Admin
+givenName: Ada
+mail: ada@balancing.lab
+
+dn: cn=drill-viewers,ou=groups,dc=balancing,dc=lab
+objectClass: groupOfNames
+cn: drill-viewers
+member: uid=vera,ou=people,dc=balancing,dc=lab
+member: uid=oscar,ou=people,dc=balancing,dc=lab
+member: uid=ada,ou=people,dc=balancing,dc=lab
+
+dn: cn=drill-operators,ou=groups,dc=balancing,dc=lab
+objectClass: groupOfNames
+cn: drill-operators
+member: uid=oscar,ou=people,dc=balancing,dc=lab
+member: uid=ada,ou=people,dc=balancing,dc=lab
+
+dn: cn=drill-admins,ou=groups,dc=balancing,dc=lab
+objectClass: groupOfNames
+cn: drill-admins
+member: uid=ada,ou=people,dc=balancing,dc=lab
+
+dn: cn=keycloak-bind,ou=system,dc=balancing,dc=lab
+objectClass: inetOrgPerson
+cn: keycloak-bind
+sn: system
+description: Keycloak federation: read only

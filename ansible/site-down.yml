@@ -1,0 +1,81 @@
+# Act I (make site-down SITE=<site>): the whole site dies at once, seal Vault
+# included. `podman kill` (SIGKILL), not a graceful stop: a site that loses
+# power does not say goodbye. Containers and volumes are kept (a drill never
+# deletes a volume). The journal line written just before the kill starts the
+# RTO clock.
+- name: Act I, a site goes dark
+  hosts: localhost
+  gather_facts: false
+  vars:
+    s: "{{ vbal_sites | selectattr('id', 'eq', site) | first }}"
+  tasks:
+    - name: Open the drill
+      ansible.builtin.include_tasks: tasks/drill_open.yml
+
+    - name: What the site is right now (Vault's own answer)
+      ansible.builtin.uri:
+        url: "{{ s.nodes[0].addr }}/v1/sys/replication/status"
+        ca_path: "{{ vbal_ca }}"
+        timeout: 5
+      register: sd_status
+      failed_when: false
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Remember its role (site-up refuses an unfenced ex-primary)
+      ansible.builtin.set_fact:
+        sd_role: >-
+          {{ 'primary' if (sd_status.json.data.dr.mode | default('')) == 'primary'
+             else 'dr-secondary' if (sd_status.json.data.dr.mode | default('')) == 'secondary'
+             else 'performance-secondary' if (sd_status.json.data.performance.mode | default('')) == 'secondary'
+             else 'unknown' }}
+
+    - name: Journal the moment (the RTO clock starts)
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "I", step: "site-down", target: "{{ site }}", request_path: "podman kill (whole site)", http_code: null,
+             vault_said: "{{ site }} was {{ sd_role }}: dr={{ sd_status.json.data.dr.mode | default('?') }}, performance={{ sd_status.json.data.performance.mode | default('?') }}" }
+
+    - name: Record the down site in the drill state
+      ansible.builtin.copy:
+        dest: "{{ drill_dir }}/state.json"
+        mode: "0644"
+        content: "{{ drill_state | combine({'down': {'site': site, 'role_before': sd_role, 'at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] ~ 'Z'}}) | to_nice_json }}"
+
+    - name: Kill the whole site (seal Vault and three nodes)
+      ansible.builtin.command:
+        argv: ["{{ vbal_root }}/scripts/compose.sh", "{{ site }}", kill]
+      changed_when: true
+
+    - name: Every node of the site is gone
+      ansible.builtin.uri:
+        url: "{{ item.addr }}/v1/sys/health"
+        ca_path: "{{ vbal_ca }}"
+        timeout: 2
+        status_code: [-1]
+      loop: "{{ s.nodes }}"
+      loop_control:
+        label: "{{ item.name }}"
+      retries: 10
+      delay: 1
+      until: true
+      failed_when: false
+      check_mode: false  # a read; check mode must see the real state
+
+    - name: Journal the kill
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "I", step: "stopped", target: "{{ site }}", request_path: null, http_code: null, vault_said: "every node and seal-{{ site }} killed" }
+
+    - name: The front door notices (health checks fail twice)
+      ansible.builtin.include_tasks: tasks/frontdoor_wait.yml
+      vars:
+        fw_site: "{{ site }}"
+        fw_backend: "{{ 'regional' if s.bootstrap_role == 'performance' else 'primary' }}"
+        fw_state: "^DOWN"
+        fw_mode: all
+
+    - name: Journal the detection
+      ansible.builtin.include_tasks: tasks/journal.yml
+      vars:
+        j: { act: "I", step: "front door marked it down", target: "{{ site }}", request_path: "GET /v1/sys/health", http_code: null,
+             vault_said: "no answer from {{ s.nodes | map(attribute='name') | join(', ') }}" }

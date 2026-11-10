@@ -1,0 +1,2 @@
+# Ansible phases allowed to report changes on a converged lab, one per line:
+# <phase> <reason>. Expected empty: every phase must be changed=0.

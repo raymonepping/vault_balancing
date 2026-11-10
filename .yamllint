@@ -1,0 +1,22 @@
+# .yamllint (read by ansible-lint): the drill's journal lines are one
+# readable sentence each, so lines may run to 280 characters.
+extends: default
+rules:
+  line-length:
+    max: 280
+  document-start: disable
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 0
+  indentation:
+    indent-sequences: consistent
+  comments-indentation: false
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

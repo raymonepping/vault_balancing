@@ -1,0 +1,10 @@
+# make dr-token (also make up, make show-ready, and the drill after every
+# promotion): a DR operations batch token from the current primary (D9).
+- name: DR operations token
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Find the primary
+      ansible.builtin.include_tasks: tasks/find_primary.yml
+    - name: Mint if missing, from another site, or under 4h
+      ansible.builtin.include_tasks: tasks/dr_token.yml

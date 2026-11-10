@@ -1,0 +1,16 @@
+# frontdoor_wait: wait until the front door shows server(s) of site `fw_site`
+# in backend `fw_backend` in state `fw_state` (a regex: UP, DOWN, MAINT): fw_mode "any"
+# (at least one) or "all".
+- name: "Front door: {{ fw_mode }} {{ fw_site }} server(s) {{ fw_state }} in {{ fw_backend }}"
+  ansible.builtin.command:
+    argv: ["{{ vbal_root }}/scripts/frontdoor-status.sh", --json]
+  register: fw_json
+  changed_when: false
+  check_mode: false  # a read; check mode must see the real state
+  retries: "{{ fw_retries | default(60) }}"
+  delay: 1
+  until: >-
+    (fw_mode == 'any' and (fw_json.stdout | from_json | selectattr('backend', 'eq', fw_backend)
+      | selectattr('server', 'match', 'vault-' ~ fw_site ~ '-') | selectattr('status', 'match', fw_state) | list | length) >= 1)
+    or (fw_mode == 'all' and (fw_json.stdout | from_json | selectattr('backend', 'eq', fw_backend)
+      | selectattr('server', 'match', 'vault-' ~ fw_site ~ '-') | rejectattr('status', 'match', fw_state) | list | length) == 0)

@@ -1,0 +1,163 @@
+/* balancing.css: the situation room on top of Vault daylight glass
+   (vault-glass.css, shell.css, app.css). One ink hero per page carries the
+   drill clock; everything else is glass with black ink. Colour only for
+   state, from tokens (no hue literals). The live dot and the ticker strip are
+   the only motion, both off under prefers-reduced-motion. See DESIGN.md,
+   "Situation room". */
+
+/* ── Notices ───────────────────────────────────────────────────────────── */
+.inline-notice.ok { background: var(--vg-healthy-bg); color: var(--vg-healthy); }
+.inline-notice.warn {
+  background: var(--vg-pending-bg); color: var(--vg-pending);
+  border-color: color-mix(in srgb, var(--vg-hue-amber) 28%, transparent);
+}
+.inline-notice.info {
+  background: color-mix(in srgb, var(--vg-hue-blue) 9%, transparent); color: var(--vg-action-primary);
+  border-color: color-mix(in srgb, var(--vg-hue-blue) 24%, transparent);
+}
+
+/* ── The hero: the drill clock ─────────────────────────────────────────── */
+.room-hero { padding: 26px 30px 28px; position: relative; }
+.room-hero__kicker { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: var(--vg-text-muted); }
+.room-hero__title { font-size: clamp(28px, 2.6vw, 40px); }
+.room-hero__clock { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 16px; }
+.clock { display: flex; flex-direction: column; gap: 2px; }
+.clock__value { font-size: clamp(26px, 2.4vw, 38px); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; color: var(--vg-text-primary); }
+.clock__label { font-size: 13px; color: var(--vg-text-muted); }
+.room-sentence {
+  margin: 16px 0 0; max-width: 1000px; font-size: clamp(22px, 2.2vw, 34px); line-height: 1.25;
+  font-weight: 650; letter-spacing: -0.015em; color: var(--vg-text-primary); text-wrap: balance;
+}
+.hero-action { position: absolute; top: 22px; right: 26px; }
+.layers-summary { margin: 14px 0 0; font-size: 14px; color: var(--vg-healthy); }
+
+/* ── Role pills ────────────────────────────────────────────────────────── */
+/* The grey (indigo) pill's text on its 15% tint measured 4.23:1 over the
+   glass at phone width with a drill open (axe). 20% ink keeps the hue and
+   gives 5.4:1 there, 4.9:1 on a darker background. */
+.vg-pill--manual { color: color-mix(in srgb, var(--vg-indigo) 80%, var(--vg-ink)); }
+
+/* ── Split brain: the state Act IV prevents ────────────────────────────── */
+.split-brain {
+  display: flex; flex-direction: column; gap: 6px; padding: 16px 18px; border-radius: 14px;
+  background: var(--vg-critical-bg); color: var(--vg-critical); font-size: 15px;
+  border: 1px solid color-mix(in srgb, var(--vg-hue-red) 40%, transparent);
+}
+.split-brain strong { font-size: 18px; }
+
+/* ── Front door ────────────────────────────────────────────────────────── */
+.frontdoor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.backend { display: flex; flex-direction: column; gap: 8px; }
+.backend__head { display: flex; align-items: baseline; gap: 8px; }
+.backend__head h3 { flex: 1; }
+.servers { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.server {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  font-size: 12.5px; border: 1px solid var(--vg-border-subtle); background: var(--vg-bg-elevated); color: var(--vg-text-secondary);
+}
+.server--up { color: var(--vg-healthy); background: var(--vg-healthy-bg); border-color: color-mix(in srgb, var(--vg-hue-green) 30%, transparent); font-weight: 650; }
+.server--maint { color: var(--vg-pending); background: var(--vg-pending-bg); border-color: color-mix(in srgb, var(--vg-hue-amber) 30%, transparent); }
+.server__code { font-variant-numeric: tabular-nums; }
+
+/* ── The map: three sites, west to east ────────────────────────────────── */
+.sites { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.site { display: flex; flex-direction: column; gap: 12px; }
+.site--primary { border-color: color-mix(in srgb, var(--vg-hue-blue) 45%, transparent); }
+.site--down { background: color-mix(in srgb, var(--vg-hue-red) 5%, var(--vg-bg-surface)); }
+.site__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.site__name { font-size: 22px; font-weight: 750; letter-spacing: -0.02em; flex: 1; color: var(--vg-text-primary); }
+.site__line { font-size: 14px; color: var(--vg-text-secondary); }
+.nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.node {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
+  padding: 7px 12px; border-radius: 10px; background: var(--vg-well); border: 1px solid var(--vg-border-subtle); font-size: 13px;
+}
+.node__name { font-family: var(--font-mono); font-size: 12.5px; color: var(--vg-text-primary); }
+.node__state { color: var(--vg-text-secondary); }
+.node__code { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--vg-text-primary); }
+.stale-note { font-size: 12.5px; color: var(--vg-text-dim); }
+
+/* ── The ticker strip: the last 60 seconds of writes ───────────────────── */
+.strip { display: grid; grid-template-columns: repeat(60, minmax(0, 1fr)); gap: 2px; align-items: end; height: 44px; }
+.strip__bar { border-radius: 2px; background: var(--vg-healthy); min-height: 3px; }
+.strip__bar--fail { background: var(--vg-critical); }
+.strip__bar--none { background: var(--vg-border-strong); }
+.ticker-facts { display: flex; flex-wrap: wrap; gap: 22px; font-size: 14px; color: var(--vg-text-secondary); }
+.ticker-facts strong { color: var(--vg-text-primary); font-variant-numeric: tabular-nums; }
+
+/* ── Replication ───────────────────────────────────────────────────────── */
+.repl { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.facts-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: 13.5px; margin: 0; }
+.facts-grid dt { color: var(--vg-text-muted); }
+.facts-grid dd { margin: 0; color: var(--vg-text-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* ── Timeline ──────────────────────────────────────────────────────────── */
+.journal-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tl {
+  display: grid; grid-template-columns: 110px 44px minmax(140px, 220px) minmax(0, 1fr) 54px; gap: 12px; align-items: baseline;
+  padding: 9px 14px; border-radius: 10px; background: var(--vg-well); border: 1px solid var(--vg-border-subtle); font-size: 13.5px;
+}
+.tl--refused { background: var(--vg-pending-bg); border-color: color-mix(in srgb, var(--vg-hue-amber) 28%, transparent); }
+.tl__time { font-variant-numeric: tabular-nums; color: var(--vg-text-secondary); }
+.tl__act { font-weight: 700; color: var(--vg-text-primary); }
+.tl__step { font-weight: 600; color: var(--vg-text-primary); }
+.tl__said { color: var(--vg-text-secondary); overflow-wrap: anywhere; }
+.tl__http { font-variant-numeric: tabular-nums; text-align: right; color: var(--vg-text-secondary); }
+.drill-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.drill-picker button[aria-pressed="true"] { background: var(--vg-ink); color: var(--vg-bg-surface); }
+
+/* ── Report ────────────────────────────────────────────────────────────── */
+/* Sentence case headers: no all-caps labels (DESIGN.md). */
+.vg-table th { text-transform: none; letter-spacing: normal; font-size: 13px; }
+.vg-table td.num, .vg-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Layers ────────────────────────────────────────────────────────────── */
+.gates { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.gate { gap: 6px; }
+.gate__head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.gate .mono { font-size: 12px; }
+.phases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.phase {
+  display: grid; grid-template-columns: 28px 96px 150px minmax(0, 1fr) 56px auto; gap: 12px; align-items: center;
+  padding: 9px 14px; border-radius: 10px; background: var(--vg-well); border: 1px solid var(--vg-border-subtle); font-size: 13px;
+}
+.phase__n { color: var(--vg-text-muted); font-variant-numeric: tabular-nums; }
+.phase__secs { font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; color: var(--vg-text-secondary); }
+.tool { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; justify-self: start; border: 1px solid; }
+.tool--terraform { color: var(--vg-indigo); border-color: color-mix(in srgb, var(--vg-hue-indigo) 35%, transparent); background: color-mix(in srgb, var(--vg-hue-indigo) 9%, transparent); }
+.tool--ansible { color: var(--vg-healthy); border-color: color-mix(in srgb, var(--vg-hue-green) 35%, transparent); background: var(--vg-healthy-bg); }
+.tool--make { color: var(--vg-text-primary); border-color: var(--vg-border-strong); background: var(--vg-bg-neutral); }
+
+@media (prefers-reduced-motion: reduce) {
+  .strip__bar { transition: none; }
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .sites { grid-template-columns: 1fr; }
+  .gates { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .frontdoor, .gates { grid-template-columns: 1fr; }
+  .room-hero { padding: 20px; }
+  .hero-action { position: static; margin-top: 12px; }
+  .tl { grid-template-columns: 1fr auto; }
+  .tl__said, .tl__step { grid-column: 1 / -1; }
+  .phase { grid-template-columns: 24px 1fr auto; }
+  .phase .mono, .phase__evidence, .phase__secs { grid-column: 2 / -1; }
+  .strip { height: 32px; gap: 1px; }
+}
+
+/* ── The next drill step (prompt 12) ───────────────────────────────────── */
+.action-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.action-confirm { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+.action-confirm label { font-size: 13px; color: var(--vg-text-secondary); }
+.action-reason { font-size: 13.5px; color: var(--vg-text-secondary); }
+.action-run { display: flex; flex-direction: column; gap: 6px; }
+.action-run__head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--vg-text-secondary); flex-wrap: wrap; }
+.action-run__tail {
+  margin: 0; max-height: 220px; overflow: auto; padding: 10px 12px; border-radius: 10px;
+  background: var(--vg-well); border: 1px solid var(--vg-border-subtle);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--vg-text-secondary); white-space: pre-wrap;
+}
+.signin-button { padding: 6px 12px; }
