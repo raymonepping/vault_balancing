@@ -102,11 +102,15 @@ re-attached, planned failback. One Mac, not three regions.
 | Measure | Min | Median | Max |
 | --- | --- | --- | --- |
 | RTO total (s) | 8.8 | 11 | 12.3 |
-| detection (s) | 5.3 | 6.5 | 6.8 |
-| promotion and routing (s) | 3 | 3 | 4.5 |
+| detection (s) | 2.8 | 5 | 5.3 |
+| decision (s) | 3.3 | 3.3 | 3.4 |
+| promotion and first write (s) | 2.5 | 2.7 | 3.6 |
 | RPO lost writes | 0 | 0 | 0 |
 | RPO lost seconds | 0 | 0 | 0 |
 
 10 runs; writes lost in the planned failbacks, all runs together: 0.
-Other containers running: 0. The promotion row of this run measured until
-the front door routed (the split was later changed to the first write).
+Other containers running: 0. The parts were recomputed on 2026-11-10 from
+the same ten reports (`scripts/report.js <drill dir>`): each part now starts
+where the one before ends, from the first failed write, so detection,
+decision and promotion add up to the total (within 0.1 s rounding). The
+decision here is Ansible starting the promote playbook: no person decided.

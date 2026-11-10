@@ -13,6 +13,9 @@ mkdir -p "$BUILD_DIR/logs"
 ./scripts/compose.sh identity up -d openldap keycloak >/dev/null
 
 one_shot() { # <service> <container>
+  # A container kept by an earlier failed attempt would block the name; its
+  # output is in .build/logs/identity-<service>.log.
+  podman container rm -f "$2" >/dev/null 2>&1 || true
   ./scripts/compose.sh identity --profile init run --name "$2" "$1" >"$BUILD_DIR/logs/identity-$1.log" 2>&1 || {
     tail -15 "$BUILD_DIR/logs/identity-$1.log" >&2
     die "identity-up: $1 failed; its container $2 is kept (podman logs $2)"

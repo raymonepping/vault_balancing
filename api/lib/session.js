@@ -18,7 +18,7 @@ const KC_INTERNAL = env('KEYCLOAK_INTERNAL_URL', 'http://keycloak:8080');
 const REALM = 'balancing';
 const CLIENT_ID = 'balancing-console';
 const SECRET_FILE = process.env.CONSOLE_CLIENT_SECRET_FILE || '/run/secrets/console-client-secret';
-export const CONSOLE_URL = env('CONSOLE_URL', 'https://localhost:19190');
+const CONSOLE_URL = env('CONSOLE_URL', 'https://localhost:19190');
 const REDIRECT_URI = `${CONSOLE_URL}/auth/callback`;
 export const COOKIE = 'vbal_sid';
 const SESSION_IDLE_MS = 4 * 3600 * 1000; // the realm's ssoSessionIdleTimeout
@@ -27,12 +27,12 @@ const PENDING_MAX = 100;
 
 export class Unauthenticated extends Error {}
 
-export const b64url = (buf) => Buffer.from(buf).toString('base64url');
-export const randomToken = (bytes = 32) => b64url(randomBytes(bytes));
-export const pkceChallenge = (verifier) => b64url(createHash('sha256').update(verifier).digest());
+const b64url = (buf) => Buffer.from(buf).toString('base64url');
+const randomToken = (bytes = 32) => b64url(randomBytes(bytes));
+const pkceChallenge = (verifier) => b64url(createHash('sha256').update(verifier).digest());
 const claimsOf = (jwt) => JSON.parse(Buffer.from(String(jwt).split('.')[1] || '', 'base64url').toString('utf8'));
 
-export function parseCookies(header) {
+function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
     const i = part.indexOf('=');
@@ -56,7 +56,7 @@ export const crossSiteWrite = (req) => {
   const site = req.headers['sec-fetch-site'];
   return Boolean(site) && site !== 'same-origin' && site !== 'none';
 };
-export const safeReturn = (v) => (/^\/(#\/[a-z0-9-]+)?$/.test(String(v || '/')) ? String(v) : '/');
+export const safeReturn = (v) => (/^\/(#\/[a-z0-9-]+)?$/.test(String(v)) ? String(v) : '/');
 
 export const verifyAccess = createVerifier({
   jwksUrl: `${KC_INTERNAL}/realms/${REALM}/protocol/openid-connect/certs`,

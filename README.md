@@ -43,8 +43,10 @@ Ten complete drills in a row (`make drill-runs N=10`, `docs/capabilities.md`):
 | Writes lost in the outage | 0 | 0 | 0 |
 | Writes lost in the planned failback | 0 | 0 | 0 |
 
-Most of the RTO is detection: HAProxy marks a node down after two failed
-health checks a second apart, and killing four containers takes about 3 s.
+The RTO has three parts that add up to it (medians): detection 5 s (HAProxy
+marks a node down after two failed health checks a second apart), decision
+3.3 s (in a scripted drill, Ansible starting the promote playbook; a person
+takes longer), and promotion with the first write 2.7 s.
 
 ## Prerequisites
 

@@ -5,7 +5,7 @@
 // library only; the host runner imports this same file.
 import { createPublicKey, verify } from 'node:crypto';
 
-export const ROLE_GROUPS = { admin: 'drill-admins', operator: 'drill-operators', viewer: 'drill-viewers' };
+const ROLE_GROUPS = { admin: 'drill-admins', operator: 'drill-operators', viewer: 'drill-viewers' };
 
 // The strongest role in the signed groups claim, or null.
 export function roleOf(claims) {
@@ -15,7 +15,9 @@ export function roleOf(claims) {
   if (g.has(ROLE_GROUPS.viewer)) return 'viewer';
   return null;
 }
-export const mayAct = (claims) => ['admin', 'operator'].includes(roleOf(claims));
+// The roles that may press a drill button: the API, the runner and the panel's text all read this.
+export const ACTING_ROLES = ['admin', 'operator'];
+export const mayAct = (claims) => ACTING_ROLES.includes(roleOf(claims));
 
 const b64json = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 

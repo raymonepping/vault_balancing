@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRunner } from './runner.js';
@@ -49,6 +49,45 @@ test('an operator runs the next step; its make arguments come from sites.json; t
   assert.equal(calls[0].env.VBAL_OPERATOR, 'oscar');
   await new Promise((res) => setTimeout(res, 10));
   assert.equal(r.status().exit_code, 0);
+});
+
+test('a make that cannot start is a failed run, not a crashed runner; the next press is accepted', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vbal-runner-'));
+  let n = 0;
+  const r = createRunner({ root: dir, secret: 's3cret', verify, sites: SITES, drillDir: join(dir, 'drill'), logDir: join(dir, 'logs'), spawnImpl: () => {
+    n += 1;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    setImmediate(() => {
+      child.emit('error', Object.assign(new Error('spawn make ENOENT'), { code: 'ENOENT' }));
+      child.emit('close', -2);
+    });
+    return child;
+  } });
+  assert.equal((await r.run({ action: 'site-down', headers: h('oscar') }))[0], 202);
+  await new Promise((res) => setTimeout(res, 10));
+  assert.equal(r.status().exit_code, 127);
+  assert.equal(r.status().running, false);
+  assert.match(r.status().tail.join('\n'), /make did not start \(spawn make ENOENT\)/);
+  assert.equal((await r.run({ action: 'site-down', headers: h('oscar') }))[0], 202);
+  assert.equal(n, 2);
+});
+
+test('a log file that cannot be written does not stop the step or the runner', async () => {
+  // A read-only log folder: the stream fails like on a full disk (an error event).
+  const dir = mkdtempSync(join(tmpdir(), 'vbal-runner-'));
+  const logDir = join(dir, 'logs');
+  mkdirSync(logDir);
+  chmodSync(logDir, 0o500);
+  const calls = [];
+  const r = createRunner({ root: dir, secret: 's3cret', verify, sites: SITES, spawnImpl: fakeSpawn(calls), drillDir: join(dir, 'drill'), logDir });
+  assert.equal((await r.run({ action: 'site-down', headers: h('oscar') }))[0], 202);
+  await new Promise((res) => setTimeout(res, 20));
+  chmodSync(logDir, 0o700);
+  assert.equal(r.status().exit_code, 0);
+  assert.match(r.status().tail.join('\n'), /log file failed/);
+  assert.match(r.status().tail.join('\n'), /PLAY RECAP ok/);
 });
 
 test('refusals: no secret, a forged token, a viewer, a step out of order, a second run while busy', async () => {

@@ -16,6 +16,7 @@ import { pollSite, withLag } from './lib/vault.js';
 import { parseStats } from './lib/frontdoor.js';
 import { ID, openDrill, listDrills, readReport } from './lib/journal.js';
 import { nextStep, steps, view } from './lib/actions.js';
+import { ACTING_ROLES } from './lib/oidc.js';
 
 const SSE_MAX = 20;
 
@@ -160,7 +161,7 @@ export function createApp({ sites, pollers, drillDir, layersFile, auth = null, r
     // POST /api/actions/:id
     if (auth.crossSiteWrite(req)) return error(403, 'cross_site', 'refused: this request came from another site');
     if (!p) return error(401, 'unauthenticated', 'sign in first');
-    if (!['admin', 'operator'].includes(p.role)) return error(403, 'forbidden', `${p.user} is a ${p.role ?? 'stranger'}: operators and admins run the drill`);
+    if (!ACTING_ROLES.includes(p.role)) return error(403, 'forbidden', `${p.user} is a ${p.role ?? 'stranger'}: operators and admins run the drill`);
     const want = steps(drillSites).find((s) => s.id === act[1]);
     if (!want) return error(404, 'not_found', 'no such drill step');
     if (want.id !== step.id) return error(409, 'not_next', `the drill is at "${step.id}"`);

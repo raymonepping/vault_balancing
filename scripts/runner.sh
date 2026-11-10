@@ -9,7 +9,9 @@ source "$(dirname -- "$0")/common.sh"
 cd "$VBAL_ROOT"
 pidf="$BUILD_DIR/runner.pid"
 port=$(vbal_conf VBAL_PORT_RUNNER)
-alive() { [ -s "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; }
+# The pid must still be the runner: after a reboot macOS hands it to another
+# process, which `down` would otherwise kill.
+alive() { [ -s "$pidf" ] && [[ "$(/bin/ps -p "$(cat "$pidf")" -o command= 2>/dev/null)" == *scripts/runner.js* ]]; }
 case "${1:-status}" in
 up)
   if alive; then

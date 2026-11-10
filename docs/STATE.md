@@ -643,3 +643,42 @@ Learned:
 - A container on `vbal-internal` reaches a host service bound to the Mac's
   127.0.0.1 at `host.containers.internal` (tested before choosing the
   runner's address).
+
+## Review round after the article (2026-11-10)
+
+A ponytail review and audit and a backend audit of prompt 12 found six
+issues; all fixed:
+
+- `runner.sh` trusted any live process with the runner's old pid: after a
+  reboot `make down` could kill an unrelated program. `alive()` now checks the
+  command line is `scripts/runner.js` (proved with a planted `sleep` pid).
+- `identity-up` could not retry after a failed one-shot: the kept container
+  blocked its own name. `one_shot` removes it first; its output stays in
+  `.build/logs/identity-<service>.log` (proved with a planted container).
+- The real `crossSiteWrite` and `safeReturn` had no test (the server test
+  fakes them): `api/test/session.test.js`. It found a bug at once:
+  `safeReturn(null)` returned the string "null", so `/auth/login` without
+  `return=` sent the browser to `/auth/null` after sign-in.
+- "Admin or operator may act" was written three times: `ACTING_ROLES` in
+  `lib/oidc.js`, used by the runner, the API and the panel's text.
+- The report's RTO parts did not add up to the total: detection started at
+  the kill, the total at the first failed write (the user's run: 6 + 13.8 +
+  2.6 under 20.6). All parts now start at the first failed write; the test
+  checks they add up. All 22 drill reports regenerated from their journals
+  (`node scripts/report.js <drill dir>`), the ten-run table in
+  `docs/capabilities.md` recomputed from the same ten reports, with a
+  decision row (also added to `drill-runs.sh`).
+- The decision row said "scripted here: near zero" (scripted: 3.3 s; the
+  user's own: 13.8 s): removed from `report.md` and the Report page.
+
+Validated: unit tests 55 passed; lint clean; `make test-ui` 17 passed;
+`make verify` 49/0; `make tf-plan-all` empty; screenshots refreshed.
+
+Verification round (ponytail review and audit, backend audit, security
+discipline) found one more: `scripts/runner.js` had no error handler on the
+step's log stream or the `make` child, so a full disk or a `make` that cannot
+start would crash the runner and kill the running step through a broken pipe.
+Fixed: a failed log is reported once in the step's output and the step goes
+on; a failed start is exit 127. Two runner tests (both fail on the old
+runner). Unit tests 57 passed, `make verify` 49/0. Left as is: sign-out is a
+GET, so a page on another localhost port could sign the presenter out.

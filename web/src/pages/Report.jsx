@@ -38,8 +38,8 @@ export default function Report() {
       </Hero>
     );
   const rows = [
-    ['Detection', r.rto.detection_s, 'the site died, until the front door marked every node down'],
-    ['Decision', r.rto.decision_s, 'until the operator ran promote (scripted here: near zero)'],
+    ['Detection', r.rto.detection_s, 'the first failed write, until the front door marked every node down'],
+    ['Decision', r.rto.decision_s, 'until the operator ran promote'],
     ['Promotion and first write', r.rto.promotion_s, "the promote call, until the ticker's first acknowledged write on the promoted site"],
   ];
   const agg = { rto: stat(reports.map((x) => x.rto.total_s)), lost: stat(reports.map((x) => x.rpo?.lost_writes)) };

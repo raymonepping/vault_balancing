@@ -43,7 +43,8 @@ export function compute(lines, { tickMs = 250, siteNames = {} } = {}) {
   const tError = ms(first?.first_error_at) ?? t0;
   const rto = {
     total_s: secs(tError, tFirst),
-    detection_s: secs(t0, ms(detected?.ts)),
+    // The parts start at the first failed write too, so they add up to the total.
+    detection_s: secs(tError, ms(detected?.ts)),
     decision_s: secs(ms(detected?.ts), ms(decided?.ts)),
     // The promote call until the first acknowledged write: the routed line is
     // only as precise as the playbook's 1 s poll, so it is not a boundary.
@@ -83,8 +84,8 @@ export function markdown(r, audit = []) {
     '',
     row('Part', 'Seconds', 'From the journal'),
     row('---', '---', '---'),
-    row('Detection', r.rto.detection_s, 'site killed, until the front door marked every node down'),
-    row('Decision', r.rto.decision_s, 'until the operator ran promote (scripted in this drill: near zero)'),
+    row('Detection', r.rto.detection_s, 'the first failed write, until the front door marked every node down'),
+    row('Decision', r.rto.decision_s, 'until the operator ran promote'),
     row('Promotion and first write', r.rto.promotion_s, "the promote call, until the ticker's first acknowledged write on the promoted site"),
     row('**Total (clients)**', r.rto.total_s, "the first failed write, until the first acknowledged write after it"),
     '',

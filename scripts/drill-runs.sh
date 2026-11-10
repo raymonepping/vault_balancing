@@ -17,10 +17,11 @@ reports=$(for id in "${ids[@]}"; do cat ".build/drill/$id/report.json"; done | j
 others=$(podman ps --format '{{.Names}}' | grep -vc '^vbal-' || true)
 summary=$(jq -r --arg others "$others" '
   def stats(f): (map(f) | sort) as $v | {min: $v[0], median: $v[(($v | length) / 2 | floor)], max: $v[-1]};
-  (stats(.rto.total_s)) as $rto | (stats(.rto.detection_s)) as $det | (stats(.rto.promotion_s)) as $pro |
+  (stats(.rto.total_s)) as $rto | (stats(.rto.detection_s)) as $det | (stats(.rto.decision_s)) as $dec | (stats(.rto.promotion_s)) as $pro |
   (stats(.rpo.lost_writes)) as $lw | (stats(.rpo.lost_seconds)) as $ls | (map(.failback.lost_writes) | add) as $fb |
   "| RTO total (s) | \($rto.min) | \($rto.median) | \($rto.max) |",
   "| detection (s) | \($det.min) | \($det.median) | \($det.max) |",
+  "| decision (s) | \($dec.min) | \($dec.median) | \($dec.max) |",
   "| promotion and first write (s) | \($pro.min) | \($pro.median) | \($pro.max) |",
   "| RPO lost writes | \($lw.min) | \($lw.median) | \($lw.max) |",
   "| RPO lost seconds | \($ls.min) | \($ls.median) | \($ls.max) |",

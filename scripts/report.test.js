@@ -17,7 +17,11 @@ const J = [
 
 test('RTO: the total as clients saw it, and its three parts from the journal', () => {
   const r = compute(J, { siteNames: { ams: 'Amsterdam', dub: 'Dublin' } });
-  assert.deepEqual(r.rto, { total_s: 4, detection_s: 2, decision_s: 0.5, promotion_s: 1.8 });
+  // detection from the first failed write (:00.25), not the kill (:00)
+  assert.deepEqual(r.rto, { total_s: 4, detection_s: 1.8, decision_s: 0.5, promotion_s: 1.8 });
+  // the parts add up to the total, within each part's 0.1 s rounding
+  const sum = r.rto.detection_s + r.rto.decision_s + r.rto.promotion_s;
+  assert.ok(Math.abs(sum - r.rto.total_s) <= 0.15, `parts ${sum} vs total ${r.rto.total_s}`);
   assert.equal(r.site_down.name, 'Amsterdam');
   assert.equal(r.promoted.site, 'dub');
 });

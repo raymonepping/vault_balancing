@@ -4,6 +4,7 @@
 // "kill Amsterdam" in the middle of a drill). Each step is the make target the
 // terminal runs; Ansible and Vault still refuse a wrong state on their own.
 // A step is done when its last journal line exists in the open drill.
+import { ACTING_ROLES } from './oidc.js';
 
 // sites: config/sites.json's array. Returns the ordered steps.
 export function steps(sites) {
@@ -36,7 +37,7 @@ export function nextStep(sites, drill) {
 
 // What a person may do with it, and why not.
 export function view(step, { role, running }) {
-  const allowed = role === 'admin' || role === 'operator';
+  const allowed = ACTING_ROLES.includes(role);
   const reason = !role ? 'Sign in as an operator to run the drill from here.' : !allowed ? 'Operators and admins run the drill; you are a viewer.' : running ? `Running: ${running.action}` : null;
   return { id: step.id, act: step.act, label: step.label, command: `make ${step.make.join(' ')}`, confirm: step.confirm ?? null, enabled: allowed && !running, reason };
 }

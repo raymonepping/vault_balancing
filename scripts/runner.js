@@ -58,18 +58,31 @@ export function createRunner({ root = ROOT, secret, verify, spawnImpl = spawn, s
       env: { ...process.env, VBAL_OPERATOR: claims.preferred_username, DRILL_AUTO: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let logOk = true;
     const take = (chunk) => {
-      log.write(chunk);
+      if (logOk) log.write(chunk);
       for (const l of String(chunk).split('\n')) if (l.trim()) run.tail.push(l.replace(/\x1b\[[0-9;]*m/g, ''));
       if (run.tail.length > 400) run.tail.splice(0, run.tail.length - 400);
     };
-    child.stdout.on('data', take);
-    child.stderr.on('data', take);
-    child.on('close', (code) => {
-      run.exit_code = code ?? 1;
+    // Without these two handlers a full disk or a make that cannot start would
+    // crash the runner, and the make it started would die halfway through a step.
+    log.on('error', (e) => {
+      if (logOk) run.tail.push(`runner: log file failed (${e.message}); the step goes on`);
+      logOk = false;
+    });
+    const finish = (code) => {
+      if (run.exit_code !== null) return; // a spawn error is followed by close
+      run.exit_code = code;
       run.finished_at = new Date().toISOString();
       log.end();
+    };
+    child.on('error', (e) => {
+      run.tail.push(`runner: make did not start (${e.message})`);
+      finish(127);
     });
+    child.stdout.on('data', take);
+    child.stderr.on('data', take);
+    child.on('close', (code) => finish(code ?? 1));
     return [202, publicState()];
   }
 
