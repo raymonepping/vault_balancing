@@ -28,9 +28,12 @@ export default function Person({ me }) {
           <div className="umf-row umf-user">{me.name}</div>
           <div className="umf-row umf-meta">{ROLE[me.role] ?? 'No drill role in the directory'}</div>
           <div className="umf-row umf-meta">Signed in through Keycloak; the directory decides the role.</div>
-          <a className="umf-signout" href="/auth/logout">
-            <LogOut size={12} aria-hidden="true" /> Sign out
-          </a>
+          {/* A POST, so a page on another localhost port cannot sign the presenter out. */}
+          <form method="post" action="/auth/logout">
+            <button type="submit" className="umf-signout">
+              <LogOut size={12} aria-hidden="true" /> Sign out
+            </button>
+          </form>
         </div>
       )}
     </div>

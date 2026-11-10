@@ -80,9 +80,10 @@ export function createApp({ sites, pollers, drillDir, layersFile, auth = null, r
     const error = (code, c, message) => json(code, { error: { code: c, message, request_id: rid } });
 
     const act = /^\/api\/actions\/([a-z-]{1,32})$/.exec(url.pathname);
-    if (req.method !== 'GET' && !(req.method === 'POST' && act)) {
-      res.setHeader('allow', act ? 'POST' : 'GET');
-      return error(405, 'method_not_allowed', 'GET only, except POST /api/actions/<step>');
+    const postOnly = Boolean(act) || url.pathname === '/auth/logout';
+    if (req.method !== 'GET' && !(req.method === 'POST' && postOnly)) {
+      res.setHeader('allow', postOnly ? 'POST' : 'GET');
+      return error(405, 'method_not_allowed', 'GET only, except POST /api/actions/<step> and POST /auth/logout');
     }
     if (url.pathname.startsWith('/auth/') || url.pathname === '/api/me' || url.pathname === '/api/actions' || act) {
       return authRoutes(req, res, url, act, { json, error, rid }).catch((e) => {
@@ -137,7 +138,7 @@ export function createApp({ sites, pollers, drillDir, layersFile, auth = null, r
   // Sign-in, who is signed in, the next drill step and pressing it.
   async function authRoutes(req, res, url, act, { json, error }) {
     if (!auth) return error(404, 'not_found', 'sign-in is not configured');
-    const redirect = (to, cookie) => res.writeHead(302, { location: to, ...(cookie ? { 'set-cookie': cookie } : {}) }).end();
+    const redirect = (to, cookie, status = 302) => res.writeHead(status, { location: to, ...(cookie ? { 'set-cookie': cookie } : {}) }).end();
     if (url.pathname === '/auth/login') return redirect(auth.login(url));
     if (url.pathname === '/auth/callback') {
       try {
@@ -148,7 +149,16 @@ export function createApp({ sites, pollers, drillDir, layersFile, auth = null, r
         return redirect('/#/room?signin=failed');
       }
     }
-    if (url.pathname === '/auth/logout') return redirect(auth.logout(req), auth.sessionCookie('', 0));
+    // Sign-out is a POST from this console only: as a GET, any page on another
+    // localhost port could sign the presenter out with an image tag.
+    if (url.pathname === '/auth/logout') {
+      if (req.method !== 'POST') {
+        res.setHeader('allow', 'POST');
+        return error(405, 'method_not_allowed', 'sign out with POST /auth/logout');
+      }
+      if (auth.crossSiteWrite(req)) return error(403, 'cross_site', 'refused: this request came from another site');
+      return redirect(auth.logout(req), auth.sessionCookie('', 0), 303);
+    }
     const p = await auth.person(req);
     if (url.pathname === '/api/me') return json(200, p ? { signedIn: true, user: p.user, name: p.name, role: p.role } : { signedIn: false });
     const running = runner ? await runner.status().catch(() => null) : null;

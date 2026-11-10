@@ -128,6 +128,21 @@ test('the next step, and who may press it', async () => {
   srv.close();
 });
 
+test('sign-out: POST from this console only; a GET or another site cannot sign anyone out', async () => {
+  const { srv, base } = await serveActions();
+  const get = await fetch(`${base}/auth/logout`, { redirect: 'manual' });
+  assert.equal(get.status, 405);
+  assert.equal(get.headers.get('allow'), 'POST');
+  const other = await fetch(`${base}/auth/logout`, { method: 'POST', redirect: 'manual', headers: { 'sec-fetch-site': 'same-site' } });
+  assert.equal(other.status, 403);
+  assert.equal(other.headers.get('set-cookie'), null);
+  const ok = await fetch(`${base}/auth/logout`, { method: 'POST', redirect: 'manual', headers: { 'sec-fetch-site': 'same-origin' } });
+  assert.equal(ok.status, 303);
+  assert.equal(ok.headers.get('location'), 'http://kc/logout');
+  assert.match(ok.headers.get('set-cookie'), /^vbal_sid=/);
+  srv.close();
+});
+
 test('pressing it: 401 signed out, 403 viewer, 403 another site, 409 out of order, 400 unconfirmed, 202 for an operator', async () => {
   const { srv, base, ran } = await serveActions();
   assert.equal((await post(base, '/api/actions/site-down', null, { confirm: 'ams' })).status, 401);

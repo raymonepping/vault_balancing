@@ -680,5 +680,10 @@ step's log stream or the `make` child, so a full disk or a `make` that cannot
 start would crash the runner and kill the running step through a broken pipe.
 Fixed: a failed log is reported once in the step's output and the step goes
 on; a failed start is exit 127. Two runner tests (both fail on the old
-runner). Unit tests 57 passed, `make verify` 49/0. Left as is: sign-out is a
-GET, so a page on another localhost port could sign the presenter out.
+runner). Unit tests 57 passed, `make verify` 49/0. Then sign-out: it was a
+GET, so a page on another localhost port could sign the presenter out with an
+image tag. `/auth/logout` is now POST only (GET 405, another site 403, 303
+to Keycloak), from a form in the person menu; an API test and a browser test
+(`make test-ui` 18 passed). Accepted by the user as they are: the CA subject
+"Vault Codex Lab CA", the home path in the first commit, the remote branch
+`initial-pr-scan`.

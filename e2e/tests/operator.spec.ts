@@ -32,6 +32,18 @@ test('a viewer (vera) sees why she cannot press it, and the API refuses her', as
   expect(r.json.error.message).toContain('vera is a viewer');
 });
 
+test('sign-out is a POST: the menu button signs out, a GET does not', async ({ page }) => {
+  await signIn(page, 'vera');
+  // A GET (what an image tag on another page would send) is refused; still signed in.
+  expect(await page.evaluate(async () => (await fetch('/auth/logout', { redirect: 'manual' })).status)).toBe(405);
+  await page.reload();
+  await expect(page.locator('.persona')).toBeVisible();
+  await page.locator('.persona').click();
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.waitForURL(/localhost:\d+\/(#.*)?$/);
+  await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible();
+});
+
 test('an operator (oscar) may press it, after typing the site', async ({ page }) => {
   await signIn(page, 'oscar');
   await page.locator('.persona').click();
